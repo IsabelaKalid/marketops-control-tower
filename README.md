@@ -64,16 +64,24 @@ The public version uses a PostgreSQL database populated exclusively with synthet
 - Independent English and Portuguese controls
 - Light and dark themes
 - PostgreSQL persistence
+- Supabase email and password authentication
+- Guest read-only demonstration mode
+- Role-based access control for administrators, operations, analysts and viewers
+- Protected API routes for order mutations and report delivery
+- Role-aware interface that hides unauthorized operational actions
+- Secure session persistence and sign-out
 - Synthetic-data fallback for local demonstrations
 - Health-check endpoint and Render deployment configuration
 
 ## Architecture
 
 ```mermaid
-flowchart LR
-    U["Browser"] --> F["React + TypeScript"]
-    F --> A["Express REST API"]
-    A --> P[("PostgreSQL / Supabase")]
+flowchart TD
+    U["Authenticated user or guest"] --> F["React + TypeScript"]
+    F --> S["Supabase Auth"]
+    F --> A["Protected Express REST API"]
+    A --> V["Token and role validation"]
+    V --> P[("PostgreSQL / Supabase")]
     A --> E["Email and Excel reports"]
     D["Future Databricks source"] -.-> A
 ```
@@ -88,7 +96,7 @@ The data-access structure also allows a future Databricks integration without re
 | --- | --- |
 | Front end | React 19, TypeScript, Tailwind CSS, Motion and Lucide React |
 | Back end | Node.js, Express and TypeScript |
-| Database | PostgreSQL and Supabase |
+| Database and authentication | PostgreSQL, Supabase Database and Supabase Auth |
 | Reports | Nodemailer and SheetJS |
 | Tooling | Vite, esbuild and tsx |
 | Deployment | Render Blueprint |
@@ -171,6 +179,21 @@ DATABASE_SSL="true"
 
 The included database seed contains only fictional demonstration data.
 
+### Authentication configuration
+
+Enable Supabase Authentication and create the required user profiles and role policies.
+
+Add the following variables to `.env.local`:
+
+```env
+VITE_SUPABASE_URL="https://YOUR_PROJECT.supabase.co"
+VITE_SUPABASE_PUBLISHABLE_KEY="YOUR_PUBLISHABLE_KEY"
+```
+
+The URL must use the Supabase project base URL without `/rest/v1/`.
+
+Never expose a Supabase secret or service-role key in front-end variables or commit credentials to Git.
+
 ## Quality checks
 
 Run the TypeScript validation:
@@ -202,11 +225,15 @@ The repository includes a `render.yaml` Blueprint containing:
 - Environment configuration
 - `/api/health` health check
 
-The following secret is required in Render:
+The following environment variables are required in Render:
 
 ```text
 DATABASE_URL
+VITE_SUPABASE_URL
+VITE_SUPABASE_PUBLISHABLE_KEY
 ```
+
+`VITE_SUPABASE_PUBLISHABLE_KEY` is intended for browser use. Database credentials and secret or service-role keys must remain restricted to the server environment.
 
 Optional email configuration:
 
@@ -232,15 +259,21 @@ Render supplies the `PORT` environment variable automatically.
 - Runtime state files are excluded from Git.
 - Secrets are configured through `.env.local` during local development.
 - Production secrets are stored as protected environment variables in Render.
+- Authentication is provided by Supabase Auth.
+- Guests have read-only access to the public demonstration.
+- Operational actions are controlled according to the authenticated user's role.
+- Write operations are protected by server-side token and role validation.
+- Hiding interface buttons is an additional usability measure, not the only security layer.
 
 ## Roadmap
 
 - Connect the production ingestion layer to Databricks
-- Add authenticated users and role-based permissions
-- Enable customer email and messaging notifications
+- Add an administrator interface for inviting and managing users
+- Add password recovery and first-access onboarding
 - Add automated tests and continuous integration
-- Add configurable operational alerts
+- Expand configurable operational alerts
 - Expand audit and activity history
+- Add monitoring and rate limiting for production APIs
 
 ## Author
 
