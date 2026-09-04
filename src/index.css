@@ -1,0 +1,103 @@
+@import "tailwindcss";
+
+html.dark { color-scheme: dark; }
+html.dark body { background: #111827; }
+.dark .bg-white { background-color: #182235 !important; }
+.dark .bg-slate-50 { background-color: #111827 !important; }
+.dark .bg-slate-100 { background-color: #202c40 !important; }
+.dark .bg-zinc-50\/50, .dark .bg-slate-50\/50 { background-color: rgba(30, 41, 59, .72) !important; }
+.dark .bg-white\/90,
+.dark .bg-white\/80,
+.dark .bg-white\/70,
+.dark .bg-white\/60 { background-color: rgba(15, 23, 42, .92) !important; }
+.dark .bg-zinc-50 { background-color: #172033 !important; }
+.dark .text-slate-900, .dark .text-zinc-900, .dark .text-slate-800, .dark .text-zinc-800 { color: #e5edf7 !important; }
+.dark .text-slate-700, .dark .text-zinc-700, .dark .text-slate-600, .dark .text-zinc-600 { color: #b8c5d6 !important; }
+.dark .text-slate-500, .dark .text-zinc-500, .dark .text-slate-400, .dark .text-zinc-400 { color: #91a2b8 !important; }
+.dark .border-slate-200, .dark .border-zinc-200, .dark .border-slate-100 { border-color: #334155 !important; }
+.dark input, .dark select, .dark textarea { background-color: #202c40 !important; color: #e5edf7 !important; border-color: #40506a !important; }
+.dark option { background-color: #202c40; color: #e5edf7; }
+.dark main { background: #111827; }
+
+/* Dark theme: keep translucent table/status surfaces readable and comfortable. */
+.dark .bg-slate-50\/70,
+.dark .bg-slate-100\/90 { background-color: #243248 !important; }
+.dark .bg-slate-200\/70 { background-color: #314159 !important; }
+.dark .bg-blue-50\/80 { background-color: #1b304d !important; }
+.dark .bg-blue-50\/40,
+.dark .bg-blue-50\/30,
+.dark .bg-blue-50\/20 { background-color: rgba(59, 130, 246, .13) !important; }
+.dark .bg-rose-50\/80,
+.dark .bg-rose-50\/70 { background-color: #38232d !important; }
+.dark .bg-amber-50\/80,
+.dark .bg-amber-50\/60,
+.dark .bg-amber-50\/30 { background-color: #382f20 !important; }
+
+.dark .bg-blue-50 { background-color: #1a304d !important; }
+.dark .bg-blue-100 { background-color: #1e3a5f !important; }
+.dark .bg-emerald-50,
+.dark .bg-green-50 { background-color: #19372f !important; }
+.dark .bg-emerald-50\/60 { background-color: #15372f !important; }
+.dark .bg-rose-50 { background-color: #3b222d !important; }
+.dark .bg-amber-50 { background-color: #3b311f !important; }
+.dark .bg-indigo-50 { background-color: #282b4d !important; }
+.dark .bg-orange-50 { background-color: #3d2a20 !important; }
+.dark .bg-orange-100 { background-color: #49301f !important; }
+.dark .bg-cyan-50 { background-color: #19363d !important; }
+
+.dark .text-blue-600 { color: #60a5fa !important; }
+.dark .text-blue-700,
+.dark .text-blue-800,
+.dark .text-blue-900 { color: #93c5fd !important; }
+.dark .text-emerald-700,
+.dark .text-emerald-800 { color: #6ee7b7 !important; }
+.dark .text-green-500,
+.dark .text-green-600,
+.dark .text-green-700 { color: #86efac !important; }
+.dark .text-rose-700,
+.dark .text-rose-800,
+.dark .text-red-700 { color: #fda4af !important; }
+.dark .text-red-500,
+.dark .text-red-600 { color: #fb7185 !important; }
+.dark .text-amber-700,
+.dark .text-orange-600,
+.dark .text-orange-700,
+.dark .text-orange-800 { color: #fed7aa !important; }
+.dark .text-indigo-700 { color: #a5b4fc !important; }
+.dark .text-cyan-600,
+.dark .text-cyan-700 { color: #67e8f9 !important; }
+
+.dark .border-blue-200 { border-color: #365a86 !important; }
+.dark .border-emerald-200,
+.dark .border-green-200 { border-color: #2f6657 !important; }
+.dark .border-rose-200,
+.dark .border-red-200 { border-color: #754052 !important; }
+.dark .border-amber-200,
+.dark .border-orange-200 { border-color: #765d31 !important; }
+.dark .border-indigo-200 { border-color: #50558a !important; }
+.dark .border-cyan-200 { border-color: #376873 !important; }
+
+.dark thead { color: #dbe7f5; }
+.dark tbody.bg-white { background-color: #182235 !important; }
+
+/* Dense data views need stronger separation than the general dark palette. */
+.dark table thead {
+  background-color: #25334a !important;
+  color: #dce8f7 !important;
+}
+.dark table tbody {
+  color: #d9e5f3 !important;
+}
+.dark table tbody tr {
+  border-color: #52647e !important;
+}
+.dark table tbody td {
+  border-color: #52647e !important;
+}
+.dark table tbody tr:hover {
+  background-color: #243754 !important;
+}
+.dark .text-slate-300,
+.dark .text-zinc-300 { color: #d4dfed !important; }
+.dark .divide-slate-50 > :not(:last-child),
+.dark .divide-slate-100 > :not(:last-child) { border-color: #52647e !important; }

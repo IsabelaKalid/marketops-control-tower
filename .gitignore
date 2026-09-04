@@ -1,0 +1,22 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# Local runtime state and generated archives
+data/marketplace-purchase-confirmations.json
+data/order-cancellation-reasons.json
+*.zip
+
+# Editor settings
+.vscode/
+.idea/
+
+# Legacy local conversion helpers (not part of the portfolio application)
+metadata.json
+scripts/parseCsv.ts
+scripts/generateSeedFromXlsx.py
