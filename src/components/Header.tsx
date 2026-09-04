@@ -1,4 +1,5 @@
 import React from 'react';
+import { useAuth } from '../auth/AuthProvider';
 import { 
   Plus, 
   RefreshCw, 
@@ -44,6 +45,7 @@ export const Header: React.FC<HeaderProps> = ({
   darkMode,
   onToggleDarkMode,
 }) => {
+  const { canManageOrders } = useAuth();
   const currentSearch = searchQuery ?? searchValue ?? '';
   return (
     <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-4 sm:px-6 lg:px-8 sticky top-0 z-30">
@@ -94,6 +96,7 @@ export const Header: React.FC<HeaderProps> = ({
         </button>
 
         {/* Sync Databricks Action */}
+        {canManageOrders && (
         <button
           id="btn-sync-all"
           onClick={onSyncAll}
@@ -104,6 +107,7 @@ export const Header: React.FC<HeaderProps> = ({
           <RefreshCw className={`w-3.5 h-3.5 text-blue-600 ${isSyncing ? 'animate-spin' : ''}`} />
           <span className="hidden sm:inline">{isSyncing ? (language==='pt'?'Atualizando...':'Syncing all...') : (language==='pt'?'Atualizar pedidos':'Sync All Orders')}</span>
         </button>
+        )}
 
         {/* Send Multiple Orders (Batch Import) Button */}
         {onOpenBatchImport && (

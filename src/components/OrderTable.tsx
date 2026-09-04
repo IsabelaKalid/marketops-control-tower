@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useAuth } from '../auth/AuthProvider';
 import { 
   Check, 
   Copy, 
@@ -37,6 +38,7 @@ export const OrderTable: React.FC<OrderTableProps> = ({
   onBulkCancel,
 }) => {
   const pt = language === 'pt';
+  const { canManageOrders } = useAuth();
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'standard' | 'spreadsheet'>('spreadsheet');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -270,7 +272,7 @@ export const OrderTable: React.FC<OrderTableProps> = ({
         </div>
       </div>
 
-      {selectedIds.size > 0 && (
+      {canManageOrders && selectedIds.size > 0 && (
         <div className="px-5 py-3 border-b border-blue-200 bg-blue-50/80">
           {confirmBulkCancellation ? (
             <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 rounded-xl border border-rose-300 bg-rose-50 p-3">
@@ -309,7 +311,9 @@ export const OrderTable: React.FC<OrderTableProps> = ({
           <table className="w-full text-left border-collapse min-w-[1280px]">
             <thead className="bg-slate-100/90 text-slate-600 text-[10px] uppercase font-bold tracking-wider sticky top-0 whitespace-nowrap border-b border-slate-200">
               <tr>
-                <th className="px-3 py-3 text-center"><input type="checkbox" checked={allDisplayedSelected} onChange={toggleDisplayedOrders} aria-label={pt?'Selecionar pedidos desta página':'Select orders on this page'} className="w-4 h-4 accent-blue-600" /></th>
+                <th className="px-3 py-3 text-center"><input type="checkbox" disabled={!canManageOrders}checked={allDisplayedSelected} onChange={toggleDisplayedOrders} aria-label={pt?'Selecionar pedidos desta página':'Select orders on this page'} className={`w-4 h-4 accent-blue-600 ${
+  canManageOrders ? '' : 'invisible'
+}`} /></th>
                 <th className="px-3 py-3">#</th>
                 <th className="px-3 py-3">{pt?'Data Compra':'Purchase Date'}</th>
                 <th className="px-3 py-3">SKU Marketplace</th>
@@ -344,7 +348,9 @@ export const OrderTable: React.FC<OrderTableProps> = ({
                     }`}
                   >
                     <td className="px-3 py-3 text-center" onClick={(event) => event.stopPropagation()}>
-                      <input type="checkbox" checked={selectedIds.has(order.id)} onChange={() => toggleOrderSelection(order.id)} aria-label={`${pt?'Selecionar pedido':'Select order'} ${order.purchase_order || order.id}`} className="w-4 h-4 accent-blue-600" />
+                      <input type="checkbox" disabled={!canManageOrders} checked={selectedIds.has(order.id)} onChange={() => toggleOrderSelection(order.id)} aria-label={`${pt?'Selecionar pedido':'Select order'} ${order.purchase_order || order.id}`} className={`w-4 h-4 accent-blue-600 ${
+  canManageOrders ? '' : 'invisible'
+}`} />
                     </td>
                     {/* Index */}
                     <td className="px-3 py-3 font-mono text-slate-400 text-[11px]">
@@ -483,7 +489,9 @@ export const OrderTable: React.FC<OrderTableProps> = ({
           <table className="w-full text-left border-collapse">
             <thead className="bg-slate-50 text-slate-400 text-[10px] uppercase font-bold tracking-widest sticky top-0">
               <tr className="border-b border-slate-100">
-                <th className="px-4 py-4 text-center"><input type="checkbox" checked={allDisplayedSelected} onChange={toggleDisplayedOrders} aria-label={pt?'Selecionar pedidos desta página':'Select orders on this page'} className="w-4 h-4 accent-blue-600" /></th>
+                <th className="px-4 py-4 text-center"><input type="checkbox" disabled={!canManageOrders} checked={allDisplayedSelected} onChange={toggleDisplayedOrders} aria-label={pt?'Selecionar pedidos desta página':'Select orders on this page'} className={`w-4 h-4 accent-blue-600 ${
+  canManageOrders ? '' : 'invisible'
+}`} /></th>
                 <th className="px-6 py-4">Ordem de Compra (PO)</th>
                 <th className="px-6 py-4">{pt?'Cliente':'Customer'}</th>
                 <th className="px-6 py-4">Product Details</th>
@@ -515,7 +523,9 @@ export const OrderTable: React.FC<OrderTableProps> = ({
                     }`}
                   >
                     <td className="px-4 py-4 text-center" onClick={(event) => event.stopPropagation()}>
-                      <input type="checkbox" checked={selectedIds.has(order.id)} onChange={() => toggleOrderSelection(order.id)} aria-label={`${pt?'Selecionar pedido':'Select order'} ${order.purchase_order || order.id}`} className="w-4 h-4 accent-blue-600" />
+                      <input type="checkbox" disabled={!canManageOrders} checked={selectedIds.has(order.id)} onChange={() => toggleOrderSelection(order.id)} aria-label={`${pt?'Selecionar pedido':'Select order'} ${order.purchase_order || order.id}`} className={`w-4 h-4 accent-blue-600 ${
+  canManageOrders ? '' : 'invisible'
+}`} />
                     </td>
                     {/* Order Info: Ordem de Compra (PO) */}
                     <td className="px-6 py-4 whitespace-nowrap">

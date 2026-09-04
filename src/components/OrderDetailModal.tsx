@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { Order, OrderStatus } from '../types';
 import { translatePurchaseStatus } from '../utils/statusTranslation';
+import { useAuth } from '../auth/AuthProvider';
 
 interface OrderDetailModalProps {
   order: Order | null;
@@ -44,6 +45,7 @@ export const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
   language = 'en',
 }) => {
   const pt = language === 'pt';
+  const { canManageOrders } = useAuth();
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [alertSuccessMsg, setAlertSuccessMsg] = useState<string | null>(null);
   const [savingPurchase, setSavingPurchase] = useState(false);
@@ -266,14 +268,16 @@ export const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
                   </p>
                 </div>
               </div>
-              <button
-                type="button"
-                disabled={savingPurchase}
-                onClick={async () => { setSavingPurchase(true); try { await onConfirmMarketplacePurchase(order.id, !order.marketplace_purchase_confirmed); } finally { setSavingPurchase(false); } }}
-                className={`px-4 py-2 rounded-lg text-xs font-bold text-white disabled:opacity-50 ${order.marketplace_purchase_confirmed ? 'bg-slate-600 hover:bg-slate-700' : 'bg-emerald-600 hover:bg-emerald-700'}`}
-              >
-                {savingPurchase ? (pt?'Salvando...':'Saving...') : order.marketplace_purchase_confirmed ? (pt?'Desfazer confirmação':'Undo confirmation') : (pt?'Marcar compra como OK':'Mark purchase as OK')}
-              </button>
+              {canManageOrders && (
+                <button
+                  type="button"
+                  disabled={savingPurchase}
+                  onClick={async () => { setSavingPurchase(true); try { await onConfirmMarketplacePurchase(order.id, !order.marketplace_purchase_confirmed); } finally { setSavingPurchase(false); } }}
+                  className={`px-4 py-2 rounded-lg text-xs font-bold text-white disabled:opacity-50 ${order.marketplace_purchase_confirmed ? 'bg-slate-600 hover:bg-slate-700' : 'bg-emerald-600 hover:bg-emerald-700'}`}
+                >
+                  {savingPurchase ? (pt?'Salvando...':'Saving...') : order.marketplace_purchase_confirmed ? (pt?'Desfazer confirmação':'Undo confirmation') : (pt?'Marcar compra como OK':'Mark purchase as OK')}
+                </button>
+              )}
             </div>
           </div>}
 
@@ -284,15 +288,18 @@ export const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
               rows={3}
               value={cancellationReason}
               onChange={event => setCancellationReason(event.target.value)}
+              disabled={!canManageOrders}
               placeholder={pt?'Ex.: produto indisponível, preço alterado, cancelado pelo cliente...':'Example: unavailable product, price changed, cancelled by customer...'}
-              className="w-full rounded-lg border border-rose-200 bg-white p-3 text-sm text-slate-800 focus:outline-none focus:border-rose-500"
+              className="w-full rounded-lg border border-rose-200 bg-white p-3 text-sm text-slate-800 focus:outline-none focus:border-rose-500 disabled:cursor-not-allowed disabled:bg-slate-100"
             />
-            <div className="flex justify-end mt-2"><button
-              type="button"
-              disabled={savingReason || !cancellationReason.trim()}
-              onClick={async () => { setSavingReason(true); try { await onSaveCancellationReason(order.id, cancellationReason); } finally { setSavingReason(false); } }}
-              className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold disabled:opacity-50"
-            >{savingReason ? (pt?'Salvando...':'Saving...') : order.cancellation_reason ? (pt?'Atualizar justificativa':'Update Reason') : (pt?'Salvar justificativa':'Save Reason')}</button></div>
+            {canManageOrders && (
+              <div className="flex justify-end mt-2"><button
+                type="button"
+                disabled={savingReason || !cancellationReason.trim()}
+                onClick={async () => { setSavingReason(true); try { await onSaveCancellationReason(order.id, cancellationReason); } finally { setSavingReason(false); } }}
+                className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold disabled:opacity-50"
+              >{savingReason ? (pt?'Salvando...':'Saving...') : order.cancellation_reason ? (pt?'Atualizar justificativa':'Update Reason') : (pt?'Salvar justificativa':'Save Reason')}</button></div>
+            )}
           </div>}
 
           {/* Marketplace Logistics & Customs Overview (if available) */}
@@ -488,6 +495,7 @@ export const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
           </div>
 
           {/* Section 3: Automated Delivery Alert Dispatcher */}
+          {canManageOrders && (
           <div className="p-4 rounded-lg border border-indigo-200 bg-indigo-50/30 space-y-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -524,6 +532,7 @@ export const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
               </button>
             </div>
           </div>
+          )}
 
           {/* Notes if any */}
           {order.notes && (
@@ -582,7 +591,7 @@ export const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
               </div>
 
               <div className="flex items-center gap-6">
-                {order.status !== 'Cancelled' && order.status !== 'Delivered' && (
+                {canManageOrders && order.status !== 'Cancelled' && order.status !== 'Delivered' && (
                   <button
                     type="button"
                     onClick={() => setConfirmingCancellation(true)}

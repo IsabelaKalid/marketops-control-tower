@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, Plus, Sparkles, AlertCircle, CheckCircle2, DollarSign, Calendar, Truck, UploadCloud } from 'lucide-react';
 import { Order } from '../types';
+import { apiFetch } from '../lib/api';
 
 interface NewOrderModalProps {
   isOpen: boolean;
@@ -116,7 +117,7 @@ export const NewOrderModal: React.FC<NewOrderModalProps> = ({
 
     setIsSubmitting(true);
     try {
-      const response = await fetch('/api/orders', {
+      const response = await apiFetch('/api/orders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

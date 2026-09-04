@@ -6,6 +6,8 @@ import { CSV_ORDERS } from './src/data/seededOrders';
 import dotenv from 'dotenv';
 import nodemailer from 'nodemailer';
 import * as XLSX from 'xlsx';
+import { requireRoles } from './server/auth';
+
 import {
   loadOrdersFromPostgres,
   postgresEnabled,
@@ -21,6 +23,33 @@ const app = express();
 const PORT = Number(process.env.PORT || 3000);
 
 app.use(express.json());
+
+const requireOrderManager = requireRoles(
+  'admin',
+  'operations'
+);
+
+const requireReportAccess = requireRoles(
+  'admin',
+  'operations',
+  'analyst'
+);
+
+app.use('/api', (request, response, next) => {
+  const readOnlyMethods = ['GET', 'HEAD', 'OPTIONS'];
+
+  if (readOnlyMethods.includes(request.method)) {
+    next();
+    return;
+  }
+
+  if (request.path === '/reports/email') {
+    requireReportAccess(request, response, next);
+    return;
+  }
+
+  requireOrderManager(request, response, next);
+});
 
 // In-memory application state seeded with a fully synthetic demo dataset.
 interface ShipmentEvent {

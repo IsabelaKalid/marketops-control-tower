@@ -11,6 +11,7 @@ import {
   Volume2
 } from 'lucide-react';
 import { DeliveryAlert, Order } from '../types';
+import { useAuth } from '../auth/AuthProvider';
 
 interface AlertsDrawerProps {
   isOpen: boolean;
@@ -27,6 +28,7 @@ export const AlertsDrawer: React.FC<AlertsDrawerProps> = ({
   orders,
   onTriggerTestAlert,
 }) => {
+  const { canManageOrders } = useAuth();
   const [selectedOrderId, setSelectedOrderId] = useState<string>(orders[0]?.id || '');
   const [selectedEventType, setSelectedEventType] = useState('Out for Delivery');
   const [browserNotificationAllowed, setBrowserNotificationAllowed] = useState(
@@ -118,7 +120,7 @@ export const AlertsDrawer: React.FC<AlertsDrawerProps> = ({
         </div>
 
         {/* Browser Push Permission Banner */}
-        <div className="p-3.5 bg-blue-50/50 border-b border-blue-100/70 flex items-center justify-between gap-2">
+        {canManageOrders && <div className="p-3.5 bg-blue-50/50 border-b border-blue-100/70 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2.5">
             <Smartphone className="w-4 h-4 text-blue-600 shrink-0" />
             <div>
@@ -143,10 +145,10 @@ export const AlertsDrawer: React.FC<AlertsDrawerProps> = ({
               Enabled
             </span>
           )}
-        </div>
+        </div>}
 
         {/* Feedback message */}
-        {feedback && (
+        {canManageOrders && feedback && (
           <div className="p-3 bg-green-50 text-green-800 border-b border-green-200 flex items-center gap-2 text-[11px]">
             <CheckCircle2 className="w-3.5 h-3.5 text-green-600 shrink-0" />
             <span>{feedback}</span>
@@ -154,7 +156,7 @@ export const AlertsDrawer: React.FC<AlertsDrawerProps> = ({
         )}
 
         {/* Test Alert Dispatcher Accordion / Card */}
-        <div className="p-4 bg-slate-50/70 border-b border-slate-200 space-y-3">
+        {canManageOrders && <div className="p-4 bg-slate-50/70 border-b border-slate-200 space-y-3">
           <span className="font-bold text-slate-800 block text-xs">
             Trigger Real-time Delivery Alert Test
           </span>
@@ -200,7 +202,7 @@ export const AlertsDrawer: React.FC<AlertsDrawerProps> = ({
             <Send className="w-3.5 h-3.5" />
             <span>{isSending ? 'Dispatching...' : 'Dispatch Automated Email & Push'}</span>
           </button>
-        </div>
+        </div>}
 
         {/* Alerts List */}
         <div className="p-4 flex-1 overflow-y-auto space-y-3 bg-white">

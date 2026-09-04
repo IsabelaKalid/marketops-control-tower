@@ -1,4 +1,5 @@
 import React from 'react';
+import { useAuth } from '../auth/AuthProvider';
 import { 
   LayoutDashboard, 
   Package, 
@@ -46,6 +47,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
   language = 'en',
 }) => {
   const pt = language === 'pt';
+  const {
+  canManageOrders,
+  user,
+  role,
+  isGuest,
+  signOut,
+} = useAuth();
   const selectedTab = currentTab || activeTab || 'dashboard';
   const isMenuOpen = mobileOpen ?? isMobileOpen ?? false;
   return (
@@ -190,7 +198,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
           ))}
 
           {/* Action Quick Buttons */}
-          <div className="pt-4 px-2 space-y-2">
+            {canManageOrders && (
+              <div className="pt-4 px-2 space-y-2">
             {onOpenBatchImport && (
               <button
                 id="sidebar-batch-order-btn"
@@ -217,24 +226,41 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <Plus className="w-4 h-4" />
               <span>{pt ? 'Inserir novo pedido' : 'Insert New Order'}</span>
             </button>
-          </div>
+          </div> 
+        )}
         </nav>
 
         {/* User Account / Footer */}
-        <div className="p-4 border-t border-slate-800">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center text-slate-200 font-semibold text-xs border border-slate-600">
-              AU
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-semibold text-white truncate">Admin User</p>
-              <p className="text-xs text-slate-400 flex items-center gap-1.5 truncate">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                Cloud Enterprise
-              </p>
-            </div>
-          </div>
-        </div>
+<div className="border-t border-slate-800 p-4">
+  <div className="flex items-center gap-3">
+    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-slate-600 bg-slate-700 text-xs font-semibold text-slate-200">
+      {isGuest
+        ? 'GU'
+        : (user?.email?.slice(0, 2) || 'US').toUpperCase()}
+    </div>
+
+    <div className="min-w-0 flex-1">
+      <p className="truncate text-sm font-semibold text-white">
+        {isGuest
+          ? 'Guest Viewer'
+          : user?.email || 'Authenticated User'}
+      </p>
+
+      <p className="flex items-center gap-1.5 truncate text-xs capitalize text-slate-400">
+        <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+        {isGuest ? 'Read-only demo' : role}
+      </p>
+    </div>
+  </div>
+
+  <button
+    type="button"
+    onClick={() => void signOut()}
+    className="mt-3 w-full rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-300 transition hover:bg-slate-800 hover:text-white"
+  >
+    {isGuest ? 'Exit demo' : 'Sign out'}
+  </button>
+</div>
       </aside>
     </>
   );

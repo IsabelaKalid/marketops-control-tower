@@ -11,6 +11,9 @@ import { AlertsDrawer } from './components/AlertsDrawer';
 import { DatabricksInfoModal } from './components/DatabricksInfoModal';
 import { BatchOrderImportModal } from './components/BatchOrderImportModal';
 import { ReportsDashboard } from './components/ReportsDashboard';
+import { apiFetch } from './lib/api';
+import { useAuth } from './auth/AuthProvider';
+
 import { 
   Order, 
   DashboardStats as StatsType, 
@@ -22,6 +25,7 @@ import { CheckCircle2, X } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
 export default function App() {
+  const { isGuest, signOut } = useAuth();
   const [language, setLanguage] = useState<'en' | 'pt'>(() => localStorage.getItem('marketops-ui-language') === 'pt' ? 'pt' : 'en');
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem('marketops-theme') === 'dark');
   // Navigation & UI States
@@ -106,7 +110,7 @@ export default function App() {
       params.append('sort_by', filters.sort_by || 'updated_at');
       params.append('sort_direction', filters.sort_direction || 'desc');
 
-      const res = await fetch(`/api/orders?${params.toString()}`);
+      const res = await apiFetch(`/api/orders?${params.toString()}`);
       if (res.ok) {
         const data = await res.json();
         setOrders(data.orders || []);
@@ -119,7 +123,7 @@ export default function App() {
   // Fetch Dashboard Stats
   const fetchStats = useCallback(async () => {
     try {
-      const res = await fetch('/api/dashboard/stats');
+      const res = await apiFetch('/api/dashboard/stats');
       if (res.ok) {
         const data = await res.json();
         setStats(data);
@@ -132,7 +136,7 @@ export default function App() {
   // Fetch Alerts
   const fetchAlerts = useCallback(async () => {
     try {
-      const res = await fetch('/api/alerts');
+      const res = await apiFetch('/api/alerts');
       if (res.ok) {
         const data = await res.json();
         setAlerts(data.alerts || []);
@@ -144,7 +148,7 @@ export default function App() {
 
   const fetchSellers = useCallback(async () => {
     try {
-      const res = await fetch('/api/sellers');
+      const res = await apiFetch('/api/sellers');
       if (res.ok) setAvailableSellers((await res.json()).sellers || []);
     } catch (err) {
       console.error('Error fetching sellers:', err);
@@ -301,7 +305,7 @@ export default function App() {
     setSelectedOrder(prev => prev?.id === orderId ? makeOptimisticOrder(prev) : prev);
 
     try {
-      const res = await fetch(`/api/orders/${orderId}/purchase-confirmation`, {
+      const res = await apiFetch(`/api/orders/${orderId}/purchase-confirmation`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ confirmed }),
@@ -339,7 +343,7 @@ export default function App() {
 
   const handleBulkPurchaseConfirmation = async (orderIds: string[]) => {
     const updatedOrders = await runOrderRequestsInBatches(orderIds, async orderId => {
-      const response = await fetch(`/api/orders/${encodeURIComponent(orderId)}/purchase-confirmation`, {
+      const response = await apiFetch(`/api/orders/${encodeURIComponent(orderId)}/purchase-confirmation`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ confirmed: true }),
@@ -359,7 +363,7 @@ export default function App() {
 
   const handleBulkCancellation = async (orderIds: string[]) => {
     const updatedOrders = await runOrderRequestsInBatches(orderIds, async orderId => {
-      const response = await fetch(`/api/orders/${encodeURIComponent(orderId)}`, {
+      const response = await apiFetch(`/api/orders/${encodeURIComponent(orderId)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'Cancelled' }),
@@ -379,7 +383,7 @@ export default function App() {
   };
 
   const handleSaveCancellationReason = async (orderId: string, reason: string) => {
-    const res = await fetch(`/api/orders/${orderId}/cancellation-reason`, {
+    const res = await apiFetch(`/api/orders/${orderId}/cancellation-reason`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason }),
     });
     const data = await res.json();
@@ -413,7 +417,7 @@ export default function App() {
   const handleSyncOrderDatabricks = async (orderId: string, targetStatus?: string) => {
     setSyncingOrderId(orderId);
     try {
-      const res = await fetch(`/api/orders/${orderId}/sync-databricks`, {
+      const res = await apiFetch(`/api/orders/${orderId}/sync-databricks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ target_status: targetStatus }),
@@ -460,7 +464,7 @@ export default function App() {
   const handleSyncAll = async () => {
     setIsSyncingAll(true);
     try {
-      const res = await fetch('/api/databricks/sync-all', { method: 'POST' });
+      const res = await apiFetch('/api/databricks/sync-all', { method: 'POST' });
       if (!res.ok) throw new Error('Failed to bulk sync Databricks');
       const data = await res.json();
 
@@ -476,7 +480,7 @@ export default function App() {
   // Update order status manually
   const handleUpdateOrderStatus = async (orderId: string, newStatus: OrderStatus) => {
     try {
-      const res = await fetch(`/api/orders/${orderId}`, {
+      const res = await apiFetch(`/api/orders/${orderId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: newStatus }),
@@ -503,7 +507,7 @@ export default function App() {
 
   // Trigger manual test delivery alert
   const handleTriggerTestAlert = async (orderId: string, eventType: string, customMsg?: string) => {
-    const res = await fetch('/api/alerts/test', {
+    const res = await apiFetch('/api/alerts/test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ order_id: orderId, event_type: eventType, message: customMsg }),
@@ -559,6 +563,27 @@ export default function App() {
 
         {/* Scrollable Dashboard Body */}
         <main className="p-4 sm:p-6 lg:p-8 flex-1 flex flex-col gap-6 overflow-y-auto">
+          {isGuest && (
+  <div className="flex flex-col gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-amber-950 sm:flex-row sm:items-center sm:justify-between">
+    <div>
+      <p className="text-sm font-bold">
+        Read-only demonstration
+      </p>
+      <p className="text-xs text-amber-800">
+        You can explore the fictional data, but operational changes are disabled.
+      </p>
+    </div>
+
+    <button
+      type="button"
+      onClick={() => void signOut()}
+      className="rounded-lg border border-amber-400 bg-white px-3 py-2 text-xs font-bold text-amber-900 hover:bg-amber-100"
+    >
+      Exit demo
+    </button>
+  </div>
+)}
+          
           {activeTab === 'dashboard' ? (
             <ReportsDashboard orders={orders} stats={filteredStats} />
           ) : (

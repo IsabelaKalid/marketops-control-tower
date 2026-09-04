@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useRef } from 'react';
+import { apiFetch } from '../lib/api';
 import { 
   X, 
   UploadCloud, 
@@ -93,7 +94,7 @@ export const BatchOrderImportModal: React.FC<BatchOrderImportModalProps> = ({
         default_status: defaultStatus,
       };
 
-      const res = await fetch('/api/orders/batch', {
+      const res = await apiFetch('/api/orders/batch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
