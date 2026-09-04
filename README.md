@@ -19,6 +19,28 @@ The application combines operational workflows with management indicators, helpi
 
 The public version uses a PostgreSQL database populated exclusively with synthetic customers, products, orders, invoices and tracking events.
 
+## Demo
+
+### Application walkthrough
+
+![MarketOps Control Tower demonstration](docs/screenshots/marketops-demo.gif)
+
+### Monitoring dashboard
+
+![MarketOps monitoring dashboard](docs/screenshots/dashboard.jpg)
+
+### Order management
+
+![Marketplace order management](docs/screenshots/orders.jpg)
+
+### Order details and logistics tracking
+
+![Order details and logistics tracking](docs/screenshots/order-details.jpg)
+
+### Reports and analytics
+
+![MarketOps reports and analytics](docs/screenshots/reports.jpg)
+
 ## Main features
 
 - Search by order, customer, SKU, ASIN or date
