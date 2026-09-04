@@ -248,4 +248,8 @@ Developed by [Isabela Kalid](https://github.com/IsabelaKalid) as a portfolio pro
 
 ## License
 
-Portfolio and educational project.
+Copyright © 2026 Isabela Kalid. All rights reserved.
+
+This source code is publicly available for portfolio and evaluation purposes only. Copying, redistribution, modification or commercial use is not permitted without prior written authorization.
+
+See the [LICENSE](LICENSE) file for complete terms.
