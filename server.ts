@@ -10,6 +10,7 @@ import { requireRoles } from './server/auth';
 
 import {
   loadOrdersFromPostgres,
+  insertOrdersToPostgres,
   postgresEnabled,
   saveCancellationToPostgres,
   saveOrderStateToPostgres,
@@ -139,6 +140,21 @@ interface DeliveryAlert {
 // Synthetic marketplace orders used by the portfolio/demo environment.
 // Order ID in menu principal and API defaults to Ordem de Compra (PO)
 const normalizeKeyPart = (value?: string) => (value || '').toString().trim().toUpperCase();
+const PENDING_CANCELLATION_REASON = 'Justificativa pendente.';
+
+const generateUniquePurchaseOrder = () => {
+  let value = '';
+  do value = `AKDN-${Math.floor(10000 + Math.random() * 90000)}`;
+  while (orders.some(order => normalizeKeyPart(order.purchase_order || order.id) === value));
+  return value;
+};
+
+const generateUniqueCustomerOrder = () => {
+  let value = '';
+  do value = String(900000000 + Math.floor(Math.random() * 1000000));
+  while (orders.some(order => normalizeKeyPart(order.customer_order_id) === value));
+  return value;
+};
 
 const orderGroupKey = (order: Order) => {
   const po = normalizeKeyPart(order.purchase_order);
@@ -556,11 +572,6 @@ app.patch('/api/orders/:id/purchase-confirmation', async (req, res) => {
   const confirmed = req.body?.confirmed !== false;
   const confirmedAt = confirmed ? new Date().toISOString() : '';
   const relatedItems = orders.filter(candidate => orderGroupKey(candidate) === orderGroupKey(order));
-  relatedItems.forEach(item => {
-    item.marketplace_purchase_confirmed = confirmed;
-    item.marketplace_purchase_confirmed_at = confirmedAt || undefined;
-    item.updated_at = new Date().toISOString();
-  });
   if (activeDataSource === 'postgres') {
     try {
       await savePurchaseConfirmationToPostgres(
@@ -573,7 +584,61 @@ app.patch('/api/orders/:id/purchase-confirmation', async (req, res) => {
       return res.status(500).json({ error: `Could not save the purchase confirmation in PostgreSQL: ${error?.message || error}` });
     }
   }
+  const updatedAt = new Date().toISOString();
+  relatedItems.forEach(item => {
+    item.marketplace_purchase_confirmed = confirmed;
+    item.marketplace_purchase_confirmed_at = confirmedAt || undefined;
+    item.updated_at = updatedAt;
+  });
   savePurchaseConfirmations();
+  res.json({ success: true, order: groupOrders(relatedItems)[0] });
+});
+
+app.patch('/api/orders/:id/cancel', async (req, res) => {
+  const order = findOrderByIdOrPo(req.params.id);
+  if (!order) return res.status(404).json({ error: `Order ${req.params.id} not found` });
+  if (order.status === 'Delivered') return res.status(400).json({ error: 'Pedidos entregues não podem ser cancelados.' });
+
+  const reason = String(req.body?.reason || '').trim() || PENDING_CANCELLATION_REASON;
+
+  const relatedItems = orders.filter(candidate => orderGroupKey(candidate) === orderGroupKey(order));
+  const cancellationUpdatedAt = new Date().toISOString();
+
+  if (activeDataSource === 'postgres') {
+    try {
+      await saveCancellationToPostgres(
+        order.purchase_order || order.id,
+        reason,
+        cancellationUpdatedAt,
+        order.account_user,
+      );
+    } catch (error: any) {
+      return res.status(500).json({ error: `Could not save the cancellation in PostgreSQL: ${error?.message || error}` });
+    }
+  }
+
+  relatedItems.forEach((item, index) => {
+    item.status = 'Cancelled';
+    item.status_text = reason;
+    item.sts_compra = 'CANCELADO';
+    item.cancellation_reason = reason;
+    item.cancellation_updated_at = cancellationUpdatedAt;
+    item.marketplace_purchase_confirmed = false;
+    item.marketplace_purchase_confirmed_at = undefined;
+    item.shipment.is_shipped = false;
+    item.shipment.shipment_status = 'Cancelled';
+    item.updated_at = cancellationUpdatedAt;
+    item.shipment.events.unshift({
+      id: `ev-cancel-${Date.now()}-${index}`,
+      timestamp: cancellationUpdatedAt.replace('T', ' ').substring(0, 19),
+      location: 'Admin Portal',
+      status: 'Cancelled',
+      description: `Pedido cancelado. Justificativa: ${reason}`,
+    });
+  });
+
+  savePurchaseConfirmations();
+  saveCancellationReasons();
   res.json({ success: true, order: groupOrders(relatedItems)[0] });
 });
 
@@ -585,7 +650,6 @@ app.patch('/api/orders/:id/cancellation-reason', async (req, res) => {
   if (!reason) return res.status(400).json({ error: 'Informe a justificativa do cancelamento.' });
   const relatedItems = orders.filter(candidate => orderGroupKey(candidate) === orderGroupKey(order));
   const cancellationUpdatedAt = new Date().toISOString();
-  relatedItems.forEach(item => { item.cancellation_reason = reason; item.cancellation_updated_at = cancellationUpdatedAt; item.updated_at = cancellationUpdatedAt; });
   if (activeDataSource === 'postgres') {
     try {
       await saveCancellationToPostgres(order.purchase_order || order.id, reason, cancellationUpdatedAt, order.account_user);
@@ -593,12 +657,13 @@ app.patch('/api/orders/:id/cancellation-reason', async (req, res) => {
       return res.status(500).json({ error: `Could not save the cancellation in PostgreSQL: ${error?.message || error}` });
     }
   }
+  relatedItems.forEach(item => { item.cancellation_reason = reason; item.status_text = reason; item.cancellation_updated_at = cancellationUpdatedAt; item.updated_at = cancellationUpdatedAt; });
   saveCancellationReasons();
   res.json({ success: true, order: groupOrders(relatedItems)[0] });
 });
 
 // 5. Insert New Order
-app.post('/api/orders', (req, res) => {
+app.post('/api/orders', async (req, res) => {
   try {
     const {
       date_order,
@@ -653,7 +718,7 @@ app.post('/api/orders', (req, res) => {
 
     const orderSeq = Math.floor(1000 + Math.random() * 9000);
     // Order ID in menu principal defaults to Ordem de Compra (PO)
-    let orderId = incomingPo || `ORD-2026-${orderSeq}`;
+    let orderId = incomingPo || generateUniquePurchaseOrder();
     if (incomingPo && orders.some((o) => o.id === incomingPo)) {
       orderId = `${incomingPo}-${req.body.sequencial || incomingSku || orderSeq}`;
     }
@@ -665,7 +730,7 @@ app.post('/api/orders', (req, res) => {
     estDeliveryDate.setDate(estDeliveryDate.getDate() + addDays);
     const estDeliveryStr = estDeliveryDate.toISOString().split('T')[0];
 
-    const initialTrackingNumber = `TRK-DB-${Math.floor(100000000 + Math.random() * 900000000)}US`;
+    const customerOrderId = req.body.customer_order_id?.toString().trim() || generateUniqueCustomerOrder();
 
     const newOrder: Order = {
       id: orderId,
@@ -683,7 +748,7 @@ app.post('/api/orders', (req, res) => {
       marketplace: marketplace || 'Amazon US',
       notes: notes || `PO: ${orderId}`,
       purchase_order: req.body.purchase_order || orderId,
-      customer_order_id: req.body.customer_order_id,
+      customer_order_id: customerOrderId,
       sequencial: req.body.sequencial || '10',
       sts_compra: req.body.sts_compra || 'COMPRADO',
       vkp2_price: req.body.vkp2_price ? parseFloat(req.body.vkp2_price) : undefined,
@@ -693,8 +758,8 @@ app.post('/api/orders', (req, res) => {
       magaya_wr: req.body.magaya_wr,
       shipment: {
         is_shipped: false,
-        carrier: marketplace === 'Mercado Livre' ? 'Mercado Envios' : 'Amazon Logistics / Databricks Delta Hub',
-        tracking_number: initialTrackingNumber,
+        carrier: '',
+        tracking_number: '',
         estimated_delivery: estDeliveryStr,
         actual_delivery_date: null,
         shipment_status: 'Preparing',
@@ -715,6 +780,9 @@ app.post('/api/orders', (req, res) => {
       updated_at: new Date().toISOString()
     };
 
+    if (activeDataSource === 'postgres') {
+      await insertOrdersToPostgres([newOrder]);
+    }
     orders.unshift(newOrder);
 
     // Trigger automated order placed alert
@@ -722,7 +790,7 @@ app.post('/api/orders', (req, res) => {
       newOrder,
       'Order Placed',
       `Order Confirmed: ${newOrder.id} (${newOrder.product_name})`,
-      `Thank you ${newOrder.customer_name}. Your marketplace order ${newOrder.id} has been received. Initial tracking number ${newOrder.shipment.tracking_number} registered via Databricks logistics delta table. Estimated delivery: ${newOrder.shipment.estimated_delivery}.`
+      `Thank you ${newOrder.customer_name}. Your marketplace order ${newOrder.id} has been received. Tracking will be added after the seller dispatches the order. Estimated delivery: ${newOrder.shipment.estimated_delivery}.`
     );
 
     res.status(201).json({
@@ -737,7 +805,7 @@ app.post('/api/orders', (req, res) => {
 });
 
 // 5b. Batch Orders Ingestion endpoint: send multiple orders at once
-app.post('/api/orders/batch', (req, res) => {
+app.post('/api/orders/batch', async (req, res) => {
   try {
     const { orders: batchItems, default_status } = req.body;
 
@@ -843,8 +911,8 @@ app.post('/api/orders/batch', (req, res) => {
         status: orderStatus,
         marketplace: item.seller || item.marketplace || 'Amazon',
         notes: item.notes || `Lote importado via MarketOps Batch Stream. Sequencial: ${item.sequencial || '10'}`,
-        purchase_order: item.purchase_order ? item.purchase_order.toString() : undefined,
-        customer_order_id: item.customer_order_id ? item.customer_order_id.toString() : undefined,
+        purchase_order: item.purchase_order ? item.purchase_order.toString() : orderId,
+        customer_order_id: item.customer_order_id ? item.customer_order_id.toString() : orderId,
         sequencial: item.sequencial ? item.sequencial.toString() : '10',
         sts_compra: stsCompra,
         seller_usd_total: totalPrice,
@@ -888,9 +956,13 @@ app.post('/api/orders/batch', (req, res) => {
         updated_at: nowIso
       };
 
-      orders.unshift(newOrder);
       createdOrders.push(newOrder);
     }
+
+    if (activeDataSource === 'postgres') {
+      await insertOrdersToPostgres(createdOrders);
+    }
+    orders.unshift(...createdOrders);
 
     // Dispatched batch alert
     alerts.unshift({
@@ -920,7 +992,7 @@ app.post('/api/orders/batch', (req, res) => {
 
 // 6. Databricks Shipment Sync endpoint for a specific order
 // Simulates / runs real-time sync with Databricks lakehouse table 'gold_logistics.marketplace_shipments'
-app.post('/api/orders/:id/sync-databricks', (req, res) => {
+app.post('/api/orders/:id/sync-databricks', async (req, res) => {
   const order = findOrderByIdOrPo(req.params.id);
   if (!order) {
     return res.status(404).json({ error: `Order ${req.params.id} not found` });
@@ -928,6 +1000,7 @@ app.post('/api/orders/:id/sync-databricks', (req, res) => {
 
   const { target_status } = req.body; // optional override: 'Shipped' | 'Out for Delivery' | 'Delivered' | 'In Transit'
   const relatedItems = orders.filter(candidate => orderGroupKey(candidate) === orderGroupKey(order));
+  const previousItems = relatedItems.map(item => structuredClone(item));
 
   const currentStatus = order.shipment.shipment_status;
   let nextShipmentStatus = currentStatus;
@@ -986,6 +1059,15 @@ app.post('/api/orders/:id/sync-databricks', (req, res) => {
     });
   });
 
+  if (activeDataSource === 'postgres') {
+    try {
+      await saveOrderStateToPostgres(relatedItems);
+    } catch (error: any) {
+      relatedItems.forEach((item, index) => Object.assign(item, previousItems[index]));
+      return res.status(500).json({ error: `Could not save the logistics synchronization in PostgreSQL: ${error?.message || error}` });
+    }
+  }
+
   // Trigger automated email/push alert for the shipment status change!
   let alertEventType: DeliveryAlert['event_type'] = 'In Transit';
   if (nextShipmentStatus === 'In Transit') alertEventType = 'Shipment Dispatched';
@@ -1010,14 +1092,26 @@ app.post('/api/orders/:id/sync-databricks', (req, res) => {
 });
 
 // 7. Bulk sync all orders with Databricks
-app.post('/api/databricks/sync-all', (req, res) => {
+app.post('/api/databricks/sync-all', async (req, res) => {
   const nowUtc = new Date().toISOString().replace('T', ' ').substring(0, 19) + ' UTC';
+  const previousOrders = orders.map(order => structuredClone(order));
 
   orders.forEach(order => {
     // Recalcula o estágio usando os dados já disponíveis. Quando a conexão
     // corporativa estiver ativa, os campos serão atualizados antes desta etapa.
     reconcileLifecycle(order);
   });
+
+  if (activeDataSource === 'postgres') {
+    try {
+      for (const groupedOrder of groupOrders(orders)) {
+        await saveOrderStateToPostgres(groupedOrder.items?.length ? groupedOrder.items : [groupedOrder]);
+      }
+    } catch (error: any) {
+      orders = previousOrders;
+      return res.status(500).json({ error: `Could not save the bulk synchronization in PostgreSQL: ${error?.message || error}` });
+    }
+  }
 
   res.json({
     success: true,
@@ -1035,7 +1129,11 @@ app.patch('/api/orders/:id', async (req, res) => {
   }
 
   const { status, notes, tracking_number, carrier, estimated_delivery, delivery_client_date, entrega_cliente } = req.body;
+  if (status === 'Cancelled') {
+    return res.status(400).json({ error: 'Use a rota de cancelamento e informe uma justificativa.' });
+  }
   const relatedItems = orders.filter(candidate => orderGroupKey(candidate) === orderGroupKey(order));
+  const previousItems = relatedItems.map(item => structuredClone(item));
 
   const oldStatus = order.status;
   const suppliedDeliveryDate = delivery_client_date || entrega_cliente;
@@ -1109,6 +1207,7 @@ app.patch('/api/orders/:id', async (req, res) => {
     try {
       await saveOrderStateToPostgres(relatedItems);
     } catch (error: any) {
+      relatedItems.forEach((item, index) => Object.assign(item, previousItems[index]));
       return res.status(500).json({ error: `Could not save the order update in PostgreSQL: ${error?.message || error}` });
     }
   }
@@ -1126,7 +1225,8 @@ app.get('/api/alerts', (req, res) => {
 // 10. Send / Test Custom Automated Alert
 app.post('/api/alerts/test', (req, res) => {
   const { order_id, event_type, recipient_email, message } = req.body;
-  const targetOrder = orders.find(o => o.id === order_id) || orders[0];
+  const targetOrder = findOrderByIdOrPo(String(order_id || ''));
+  if (!targetOrder) return res.status(404).json({ error: `Order ${order_id || ''} not found` });
 
   const alert = recordDeliveryAlert(
     targetOrder,

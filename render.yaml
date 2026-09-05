@@ -15,3 +15,7 @@ services:
         value: "true"
       - key: DATABASE_URL
         sync: false
+      - key: VITE_SUPABASE_URL
+        sync: false
+      - key: VITE_SUPABASE_PUBLISHABLE_KEY
+        sync: false

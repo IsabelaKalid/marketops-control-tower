@@ -167,9 +167,10 @@ http://localhost:3000/api/health
 
 1. Create a PostgreSQL or Supabase project.
 2. Run `database/001_schema.sql`.
-3. Run the files inside `database/seed_chunks/` in numerical order.
-4. Run `database/seed_chunks/99_validate.sql`.
-5. Configure `.env.local`:
+3. For an existing database, run `database/003_operational_write_compatibility.sql` to ensure the write and history columns are compatible.
+4. Run the files inside `database/seed_chunks/` in numerical order when loading the demonstration dataset.
+5. Run `database/seed_chunks/99_validate.sql`.
+6. Configure `.env.local`:
 
 ```env
 DATA_SOURCE="postgres"

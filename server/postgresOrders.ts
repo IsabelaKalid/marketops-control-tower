@@ -258,6 +258,132 @@ export async function saveCancellationToPostgres(
   }
 }
 
+export async function insertOrdersToPostgres(items: Order[]) {
+  if (!items.length) return;
+  const db = requirePool();
+  const client = await db.connect();
+  try {
+    await client.query('begin');
+    for (const item of items) {
+      const purchaseOrder = item.purchase_order || item.id;
+      const orderResult = await client.query(
+        `insert into public.orders (
+           purchase_order, customer_order_id, customer_name, purchase_date,
+           seller, seller_country, status, status_text, delivery_limit_days,
+           purchase_confirmed, purchase_confirmed_at, cancellation_reason, cancelled_at
+         ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+         on conflict (purchase_order) do update set
+           customer_order_id = excluded.customer_order_id,
+           customer_name = excluded.customer_name,
+           seller = excluded.seller,
+           seller_country = excluded.seller_country,
+           status = excluded.status,
+           status_text = excluded.status_text,
+           updated_at = now()
+         returning id`,
+        [
+          purchaseOrder,
+          item.customer_order_id || purchaseOrder,
+          item.customer_name,
+          item.date_order.slice(0, 10),
+          item.marketplace,
+          item.seller_country || null,
+          item.status,
+          item.status_text || null,
+          item.delivery_limit_days || 25,
+          Boolean(item.marketplace_purchase_confirmed),
+          item.marketplace_purchase_confirmed_at || null,
+          item.cancellation_reason || null,
+          item.cancellation_updated_at || null,
+        ],
+      );
+      const orderDatabaseId = orderResult.rows[0].id;
+      const itemResult = await client.query(
+        `insert into public.order_items (
+           order_id, sequential, material, description, gm9, supplier_material,
+           asin, quantity, unit_measure, vkp2_brl, seller_unit_usd, seller_total_usd
+         ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+         on conflict (order_id, sequential, material) do update set
+           description = excluded.description,
+           asin = excluded.asin,
+           quantity = excluded.quantity,
+           unit_measure = excluded.unit_measure,
+           vkp2_brl = excluded.vkp2_brl,
+           seller_unit_usd = excluded.seller_unit_usd,
+           seller_total_usd = excluded.seller_total_usd,
+           updated_at = now()
+         returning id`,
+        [
+          orderDatabaseId,
+          item.sequencial || '10',
+          item.sku,
+          item.product_name,
+          null,
+          null,
+          item.asin || null,
+          item.quantity,
+          item.unit_measure || 'PEÇ',
+          item.vkp2_price || 0,
+          item.price_unit || 0,
+          item.seller_usd_total ?? item.total_price,
+        ],
+      );
+      const itemDatabaseId = itemResult.rows[0].id;
+      await client.query(
+        `insert into public.logistics (
+           order_item_id, marketplace_order_date, marketplace_order_id,
+           account_group, account_order_status, account_user, delivery_status,
+           expected_delivery_date, carrier, carrier_tracking, wr_date,
+           warehouse_receipt, eta, etd, invoice, di_date, entry_cd_date,
+           customer_delivery_date, last_source_sync_at
+         ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+         on conflict (order_item_id) do update set
+           delivery_status = excluded.delivery_status,
+           expected_delivery_date = excluded.expected_delivery_date,
+           carrier = excluded.carrier,
+           carrier_tracking = excluded.carrier_tracking,
+           wr_date = excluded.wr_date,
+           warehouse_receipt = excluded.warehouse_receipt,
+           eta = excluded.eta,
+           etd = excluded.etd,
+           invoice = excluded.invoice,
+           di_date = excluded.di_date,
+           entry_cd_date = excluded.entry_cd_date,
+           customer_delivery_date = excluded.customer_delivery_date,
+           last_source_sync_at = excluded.last_source_sync_at,
+           updated_at = now()`,
+        [
+          itemDatabaseId,
+          item.marketplace_order_date || null,
+          item.marketplace_order_id || null,
+          item.account_group || null,
+          item.account_order_status || null,
+          item.account_user || null,
+          item.shipment.shipment_status,
+          item.shipment.estimated_delivery?.slice(0, 10) || null,
+          item.shipment.carrier || null,
+          item.shipment.tracking_number || null,
+          item.wr_date || null,
+          item.magaya_wr || null,
+          item.eta || null,
+          item.etd || null,
+          item.invoice || null,
+          item.di_date || null,
+          item.entry_cd_date || null,
+          item.delivery_client_date || null,
+          item.shipment.databricks_sync_time || null,
+        ],
+      );
+    }
+    await client.query('commit');
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function saveOrderStateToPostgres(items: Order[]) {
   if (!items.length) return;
   const db = requirePool();

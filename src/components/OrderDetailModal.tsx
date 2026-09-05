@@ -28,6 +28,7 @@ interface OrderDetailModalProps {
   isOpen: boolean;
   onClose: () => void;
   onUpdateOrderStatus: (orderId: string, newStatus: OrderStatus) => Promise<void>;
+  onCancelOrder: (orderId: string, reason: string) => Promise<void>;
   onSendManualAlert: (orderId: string, eventType: string) => Promise<void>;
   onConfirmMarketplacePurchase: (orderId: string, confirmed: boolean) => Promise<void>;
   onSaveCancellationReason: (orderId: string, reason: string) => Promise<void>;
@@ -39,6 +40,7 @@ export const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
   isOpen,
   onClose,
   onUpdateOrderStatus,
+  onCancelOrder,
   onSendManualAlert,
   onConfirmMarketplacePurchase,
   onSaveCancellationReason,
@@ -53,11 +55,13 @@ export const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
   const [savingReason, setSavingReason] = useState(false);
   const [confirmingCancellation, setConfirmingCancellation] = useState(false);
   const [cancellingOrder, setCancellingOrder] = useState(false);
+  const [actionError, setActionError] = useState('');
 
   useEffect(() => {
-    setCancellationReason(order?.cancellation_reason || '');
+    setCancellationReason(order?.cancellation_reason === 'Justificativa pendente.' ? '' : order?.cancellation_reason || '');
     setConfirmingCancellation(false);
     setCancellingOrder(false);
+    setActionError('');
   }, [order?.id, order?.cancellation_reason]);
 
   if (!isOpen || !order) return null;
@@ -191,6 +195,12 @@ export const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
             <span>{alertSuccessMsg}</span>
           </div>
         )}
+        {actionError && (
+          <div className="mx-6 mt-3 p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+            <span>{actionError}</span>
+          </div>
+        )}
 
         {/* Modal Content Scrollable */}
         <div className="p-6 space-y-6 overflow-y-auto flex-1">
@@ -272,7 +282,7 @@ export const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
                 <button
                   type="button"
                   disabled={savingPurchase}
-                  onClick={async () => { setSavingPurchase(true); try { await onConfirmMarketplacePurchase(order.id, !order.marketplace_purchase_confirmed); } finally { setSavingPurchase(false); } }}
+                  onClick={async () => { setSavingPurchase(true); setActionError(''); try { await onConfirmMarketplacePurchase(order.id, !order.marketplace_purchase_confirmed); } catch (error) { setActionError(error instanceof Error ? error.message : (pt?'Não foi possível salvar a confirmação.':'Could not save confirmation.')); } finally { setSavingPurchase(false); } }}
                   className={`px-4 py-2 rounded-lg text-xs font-bold text-white disabled:opacity-50 ${order.marketplace_purchase_confirmed ? 'bg-slate-600 hover:bg-slate-700' : 'bg-emerald-600 hover:bg-emerald-700'}`}
                 >
                   {savingPurchase ? (pt?'Salvando...':'Saving...') : order.marketplace_purchase_confirmed ? (pt?'Desfazer confirmação':'Undo confirmation') : (pt?'Marcar compra como OK':'Mark purchase as OK')}
@@ -296,9 +306,9 @@ export const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
               <div className="flex justify-end mt-2"><button
                 type="button"
                 disabled={savingReason || !cancellationReason.trim()}
-                onClick={async () => { setSavingReason(true); try { await onSaveCancellationReason(order.id, cancellationReason); } finally { setSavingReason(false); } }}
+                onClick={async () => { setSavingReason(true); setActionError(''); try { await onSaveCancellationReason(order.id, cancellationReason); } catch (error) { setActionError(error instanceof Error ? error.message : (pt?'Não foi possível salvar a justificativa.':'Could not save reason.')); } finally { setSavingReason(false); } }}
                 className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold disabled:opacity-50"
-              >{savingReason ? (pt?'Salvando...':'Saving...') : order.cancellation_reason ? (pt?'Atualizar justificativa':'Update Reason') : (pt?'Salvar justificativa':'Save Reason')}</button></div>
+              >{savingReason ? (pt?'Salvando...':'Saving...') : order.cancellation_reason && order.cancellation_reason !== 'Justificativa pendente.' ? (pt?'Atualizar justificativa':'Update Reason') : (pt?'Salvar justificativa':'Save Reason')}</button></div>
             )}
           </div>}
 
@@ -570,9 +580,12 @@ export const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
                   disabled={cancellingOrder}
                   onClick={async () => {
                     setCancellingOrder(true);
+                    setActionError('');
                     try {
-                      await onUpdateOrderStatus(order.id, 'Cancelled');
+                      await onCancelOrder(order.id, '');
                       setConfirmingCancellation(false);
+                    } catch (error) {
+                      setActionError(error instanceof Error ? error.message : (pt?'Não foi possível cancelar o pedido.':'Could not cancel the order.'));
                     } finally {
                       setCancellingOrder(false);
                     }

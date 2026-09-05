@@ -25,7 +25,7 @@ interface OrderTableProps {
   resetToFirstSignal?: number;
   language?: 'en' | 'pt';
   onBulkConfirmPurchase: (orderIds: string[]) => Promise<void>;
-  onBulkCancel: (orderIds: string[]) => Promise<void>;
+  onBulkCancel: (orderIds: string[], reason: string) => Promise<void>;
 }
 
 export const OrderTable: React.FC<OrderTableProps> = ({
@@ -106,7 +106,7 @@ export const OrderTable: React.FC<OrderTableProps> = ({
     setBulkError('');
     try {
       if (action === 'purchase') await onBulkConfirmPurchase(ids);
-      else await onBulkCancel(ids);
+      else await onBulkCancel(ids, '');
       setSelectedIds(new Set());
       setConfirmBulkCancellation(false);
     } catch (error: any) {

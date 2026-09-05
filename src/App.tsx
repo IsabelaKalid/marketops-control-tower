@@ -273,7 +273,7 @@ export default function App() {
     fetchSellers();
     showToast(
       'Order Registered & Databricks Queued',
-      `Order ${newOrder.id} for ${newOrder.customer_name} placed. Tracking #${newOrder.shipment.tracking_number} registered.`
+      `Order ${newOrder.id} for ${newOrder.customer_name} placed. Tracking is awaiting seller dispatch.`
     );
   };
 
@@ -305,7 +305,7 @@ export default function App() {
     setSelectedOrder(prev => prev?.id === orderId ? makeOptimisticOrder(prev) : prev);
 
     try {
-      const res = await apiFetch(`/api/orders/${orderId}/purchase-confirmation`, {
+      const res = await apiFetch(`/api/orders/${encodeURIComponent(orderId)}/purchase-confirmation`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ confirmed }),
@@ -328,7 +328,8 @@ export default function App() {
         setOrders(prev => prev.map(order => order.id === orderId ? previousListOrder : order));
       }
       if (previousSelectedOrder) setSelectedOrder(previousSelectedOrder);
-      showToast('Falha ao salvar', 'A confirmação não foi gravada e a alteração foi desfeita.');
+      const message = error instanceof Error ? error.message : 'Erro desconhecido.';
+      showToast('Falha ao salvar', `A confirmação não foi gravada. ${message}`);
       throw error;
     }
   };
@@ -361,12 +362,12 @@ export default function App() {
     );
   };
 
-  const handleBulkCancellation = async (orderIds: string[]) => {
+  const handleBulkCancellation = async (orderIds: string[], reason: string) => {
     const updatedOrders = await runOrderRequestsInBatches(orderIds, async orderId => {
-      const response = await apiFetch(`/api/orders/${encodeURIComponent(orderId)}`, {
+      const response = await apiFetch(`/api/orders/${encodeURIComponent(orderId)}/cancel`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'Cancelled' }),
+        body: JSON.stringify({ reason }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || `Could not cancel order ${orderId}.`);
@@ -382,17 +383,46 @@ export default function App() {
     );
   };
 
+  const handleCancelOrder = async (orderId: string, reason: string) => {
+    try {
+      const response = await apiFetch(`/api/orders/${encodeURIComponent(orderId)}/cancel`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Não foi possível cancelar o pedido.');
+
+      setOrders(previous => previous.map(order => order.id === orderId ? data.order : order));
+      setSelectedOrder(previous => previous?.id === orderId ? data.order : previous);
+      setOrderUpdateSignal(value => value + 1);
+      void fetchStats();
+      void fetchAlerts();
+      showToast('Pedido cancelado', `A PO ${data.order.purchase_order || data.order.id} foi cancelada. A justificativa pode ser preenchida nos detalhes do pedido.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Não foi possível cancelar o pedido.';
+      showToast('Falha ao cancelar', message);
+      throw error;
+    }
+  };
+
   const handleSaveCancellationReason = async (orderId: string, reason: string) => {
-    const res = await apiFetch(`/api/orders/${orderId}/cancellation-reason`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Não foi possível salvar a justificativa.');
-    setOrders(prev => prev.map(order => order.id === orderId ? data.order : order));
-    setSelectedOrder(data.order);
-    await fetchOrders();
-    setOrderUpdateSignal(value => value + 1);
-    showToast('Justificativa salva', `O motivo do cancelamento da PO ${data.order.purchase_order || data.order.id} foi registrado.`);
+    try {
+      const res = await apiFetch(`/api/orders/${encodeURIComponent(orderId)}/cancellation-reason`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Não foi possível salvar a justificativa.');
+      setOrders(prev => prev.map(order => order.id === orderId ? data.order : order));
+      setSelectedOrder(data.order);
+      await fetchOrders();
+      setOrderUpdateSignal(value => value + 1);
+      showToast('Justificativa salva', `O motivo do cancelamento da PO ${data.order.purchase_order || data.order.id} foi registrado.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Não foi possível salvar a justificativa.';
+      showToast('Falha ao salvar justificativa', message);
+      throw error;
+    }
   };
 
   // Handle Batch Orders Ingestion (Multiple Orders at Once)
@@ -480,14 +510,14 @@ export default function App() {
   // Update order status manually
   const handleUpdateOrderStatus = async (orderId: string, newStatus: OrderStatus) => {
     try {
-      const res = await apiFetch(`/api/orders/${orderId}`, {
+      const res = await apiFetch(`/api/orders/${encodeURIComponent(orderId)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: newStatus }),
       });
 
-      if (!res.ok) throw new Error('Failed to update status');
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Failed to update status');
 
       setOrders((prev) =>
         prev.map((o) => (o.id === orderId ? data.order : o))
@@ -502,6 +532,11 @@ export default function App() {
       showToast(`Order Status Changed to ${newStatus}`, `Order ${orderId} updated.`);
     } catch (err: any) {
       console.error('Update status error:', err);
+      showToast(
+        language === 'pt' ? 'Falha ao atualizar pedido' : 'Order update failed',
+        err?.message || (language === 'pt' ? 'A alteração não foi salva.' : 'The change was not saved.'),
+      );
+      throw err;
     }
   };
 
@@ -671,6 +706,7 @@ export default function App() {
         isOpen={Boolean(selectedOrder)}
         onClose={() => setSelectedOrder(null)}
         onUpdateOrderStatus={handleUpdateOrderStatus}
+        onCancelOrder={handleCancelOrder}
         onSendManualAlert={handleTriggerTestAlert}
         onConfirmMarketplacePurchase={handleMarketplacePurchaseConfirmation}
         onSaveCancellationReason={handleSaveCancellationReason}
