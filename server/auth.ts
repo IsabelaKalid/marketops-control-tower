@@ -1,16 +1,6 @@
-import type {
-  NextFunction,
-  Request,
-  RequestHandler,
-  Response,
-} from 'express';
-import { createClient } from '@supabase/supabase-js';
+import type { NextFunction, Request, RequestHandler, Response } from 'express';
 
-export type UserRole =
-  | 'admin'
-  | 'operations'
-  | 'analyst'
-  | 'viewer';
+export type UserRole = 'admin' | 'operations' | 'analyst' | 'viewer';
 
 export interface AuthenticatedRequest extends Request {
   authUser?: {
@@ -20,93 +10,76 @@ export interface AuthenticatedRequest extends Request {
   };
 }
 
+const validRoles: UserRole[] = ['admin', 'operations', 'analyst', 'viewer'];
+
 function getBearerToken(request: Request) {
   const authorization = request.headers.authorization;
-
-  if (!authorization?.startsWith('Bearer ')) {
-    return null;
-  }
-
+  if (!authorization?.startsWith('Bearer ')) return null;
   return authorization.slice('Bearer '.length).trim();
 }
 
-export function requireRoles(
-  ...allowedRoles: UserRole[]
-): RequestHandler {
+export function requireRoles(...allowedRoles: UserRole[]): RequestHandler {
   return async (
     request: AuthenticatedRequest,
     response: Response,
-    next: NextFunction
+    next: NextFunction,
   ) => {
     try {
       const token = getBearerToken(request);
-
       if (!token) {
-        response.status(401).json({
-          error: 'Authentication required.',
-        });
+        response.status(401).json({ error: 'Authentication required.' });
         return;
       }
 
-      const supabaseUrl = process.env.VITE_SUPABASE_URL;
-      const publishableKey =
-        process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-
+      const supabaseUrl = process.env.VITE_SUPABASE_URL?.replace(/\/$/, '');
+      const publishableKey = process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
       if (!supabaseUrl || !publishableKey) {
-        response.status(503).json({
-          error: 'Authentication service is not configured.',
-        });
+        response.status(503).json({ error: 'Authentication service is not configured.' });
         return;
       }
 
-      const requestClient = createClient(
-        supabaseUrl,
-        publishableKey,
-        {
-          global: {
-            headers: {
-              Authorization: `Bearer ${token}`,
-            },
-          },
-          auth: {
-            persistSession: false,
-            autoRefreshToken: false,
-          },
-        }
-      );
+      const authHeaders = {
+        apikey: publishableKey,
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+      };
 
-      const {
-        data: { user },
-        error: userError,
-      } = await requestClient.auth.getUser(token);
-
-      if (userError || !user) {
-        response.status(401).json({
-          error: 'Invalid or expired session.',
-        });
+      // Validate the token without initializing Supabase Realtime/WebSocket.
+      const userResponse = await fetch(`${supabaseUrl}/auth/v1/user`, {
+        headers: authHeaders,
+      });
+      if (!userResponse.ok) {
+        response.status(401).json({ error: 'Invalid or expired session.' });
         return;
       }
 
-      const { data: profile, error: profileError } =
-        await requestClient
-          .from('user_profiles')
-          .select('role')
-          .eq('id', user.id)
-          .single();
-
-      if (profileError || !profile) {
-        response.status(403).json({
-          error: 'User profile was not found.',
-        });
+      const user = await userResponse.json() as {
+        id?: string;
+        email?: string | null;
+      };
+      if (!user.id) {
+        response.status(401).json({ error: 'Invalid user session.' });
         return;
       }
 
-      const role = profile.role as UserRole;
+      const profileUrl = new URL(`${supabaseUrl}/rest/v1/user_profiles`);
+      profileUrl.searchParams.set('id', `eq.${user.id}`);
+      profileUrl.searchParams.set('select', 'role');
+      const profileResponse = await fetch(profileUrl, { headers: authHeaders });
+      if (!profileResponse.ok) {
+        response.status(403).json({ error: 'User profile was not found.' });
+        return;
+      }
+
+      const profiles = await profileResponse.json() as Array<{ role?: string }>;
+      const role = profiles[0]?.role as UserRole | undefined;
+      if (!role || !validRoles.includes(role)) {
+        response.status(403).json({ error: 'User profile has an invalid role.' });
+        return;
+      }
 
       if (!allowedRoles.includes(role)) {
-        response.status(403).json({
-          error: 'You do not have permission for this operation.',
-        });
+        response.status(403).json({ error: 'You do not have permission for this operation.' });
         return;
       }
 
@@ -115,14 +88,10 @@ export function requireRoles(
         email: user.email || null,
         role,
       };
-
       next();
     } catch (error) {
       console.error('Authorization error:', error);
-
-      response.status(500).json({
-        error: 'Could not validate the user session.',
-      });
+      response.status(500).json({ error: 'Could not validate the user session.' });
     }
   };
 }
