@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useAuth } from '../auth/AuthProvider';
 import { 
   LayoutDashboard, 
@@ -9,7 +9,12 @@ import {
   Plus, 
   CheckCircle2, 
   X,
-  UploadCloud
+  UploadCloud,
+  ReceiptText,
+  UsersRound,
+  ChevronLeft,
+  ChevronRight,
+  LogOut,
 } from 'lucide-react';
 import { OrderStatus } from '../types';
 
@@ -56,6 +61,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
 } = useAuth();
   const selectedTab = currentTab || activeTab || 'dashboard';
   const isMenuOpen = mobileOpen ?? isMobileOpen ?? false;
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem('marketops-sidebar-collapsed') === 'true');
+  const toggleCollapsed = () => {
+    setCollapsed(value => {
+      localStorage.setItem('marketops-sidebar-collapsed', String(!value));
+      return !value;
+    });
+  };
   return (
     <>
       {/* Mobile Backdrop */}
@@ -68,20 +80,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Sidebar Container */}
       <aside
-        className={`fixed md:sticky top-0 left-0 z-40 h-screen w-64 bg-slate-900 text-slate-300 flex flex-col border-r border-slate-800 transition-transform duration-300 ease-in-out shrink-0 ${
+        className={`fixed md:sticky top-0 left-0 z-40 h-screen ${collapsed ? 'md:w-20' : 'md:w-64'} w-64 bg-slate-900 text-slate-300 flex flex-col border-r border-slate-800 transition-all duration-300 ease-in-out shrink-0 ${
           isMenuOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
         }`}
       >
         {/* Brand Header */}
-        <div className="p-6 flex items-center justify-between">
+        <button type="button" onClick={toggleCollapsed} className="absolute -right-3 top-20 z-50 hidden h-7 w-7 items-center justify-center rounded-full border border-slate-600 bg-slate-800 text-slate-200 shadow-lg hover:border-blue-400 hover:text-white md:flex" title={collapsed ? 'Expandir menu' : 'Recolher menu'}>
+          {collapsed ? <ChevronRight className="h-4 w-4"/> : <ChevronLeft className="h-4 w-4"/>}
+        </button>
+        <div className={`${collapsed ? 'p-5 justify-center' : 'p-6 justify-between'} flex items-center`}>
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center text-white font-bold shadow-md shadow-blue-500/30">
               M
             </div>
-            <div>
+            {!collapsed && <div>
               <span className="text-xl font-bold text-white tracking-tight">MarketOps</span>
-              <p className="text-[10px] text-blue-400 font-mono tracking-wider uppercase">Logistics Lakehouse</p>
-            </div>
+              <p className="text-[10px] text-blue-400 font-mono tracking-wider uppercase">{pt ? 'Central de controle logístico' : 'Logistics Control Tower'}</p>
+            </div>}
           </div>
           <button
             onClick={onCloseMobile}
@@ -89,10 +104,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
           >
             <X className="w-5 h-5" />
           </button>
+
         </div>
 
         {/* Navigation Menu */}
-        <nav className="flex-1 px-4 py-2 space-y-1.5 overflow-y-auto">
+        <nav className={`flex-1 px-4 py-2 space-y-1.5 overflow-y-auto ${collapsed ? '[&_button]:justify-center [&_button]:px-2' : ''}`}>
           {/* Dashboard Item */}
           <button
             id="nav-dashboard"
@@ -108,7 +124,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             }`}
           >
             <LayoutDashboard className="w-5 h-5 text-blue-400" />
-            <span>Dashboard</span>
+            {!collapsed && <span>{pt ? 'Painel' : 'Dashboard'}</span>}
           </button>
 
           {/* All Orders Item */}
@@ -125,8 +141,29 @@ export const Sidebar: React.FC<SidebarProps> = ({
             }`}
           >
             <Package className="w-5 h-5 text-slate-400" />
-            <span>{pt ? 'Todos os pedidos' : 'All Orders'}</span>
+            {!collapsed && <span>{pt ? 'Todos os pedidos' : 'All Orders'}</span>}
           </button>
+
+          {/* Databricks Sync */}
+          <button
+            id="nav-invoices"
+            onClick={() => { onSelectTab('invoices'); onCloseMobile(); }}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium text-sm transition-colors text-left ${selectedTab === 'invoices' ? 'bg-blue-600/15 text-blue-400 font-semibold' : 'hover:bg-slate-800 text-slate-300 hover:text-white'}`}
+          >
+            <ReceiptText className="w-5 h-5 text-amber-400" />
+            {!collapsed && <span>{pt ? 'Invoices recentes' : 'Recent Invoices'}</span>}
+          </button>
+
+          {role === 'admin' && !isGuest && (
+            <button
+              id="nav-admin-users"
+              onClick={() => { onSelectTab('admin-users'); onCloseMobile(); }}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium text-sm transition-colors text-left ${selectedTab === 'admin-users' ? 'bg-blue-600/15 text-blue-400 font-semibold' : 'hover:bg-slate-800 text-slate-300 hover:text-white'}`}
+            >
+              <UsersRound className="w-5 h-5 text-violet-400" />
+              {!collapsed && <span>{pt ? 'Administração' : 'Administration'}</span>}
+            </button>
+          )}
 
           {/* Databricks Sync */}
           <button
@@ -138,12 +175,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
             className="w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-800 rounded-lg transition-colors text-sm text-left text-slate-300 hover:text-white group"
           >
             <Database className="w-5 h-5 text-amber-500 group-hover:scale-105 transition-transform" />
-            <div className="flex-1">
+            {!collapsed && <div className="flex-1">
               <span className="flex items-center gap-2">
-                Databricks Sync
-                <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+                {pt ? 'Integração Databricks' : 'Databricks Integration'}
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
               </span>
-            </div>
+            </div>}
           </button>
 
           {/* Delivery Alerts */}
@@ -157,7 +194,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           >
             <div className="flex items-center gap-3">
               <Bell className="w-5 h-5 text-slate-400" />
-              <span>{pt ? 'Alertas de entrega' : 'Delivery Alerts'}</span>
+              {!collapsed && <span>{pt ? 'Alertas de entrega' : 'Delivery Alerts'}</span>}
             </div>
             {unreadAlertsCount > 0 && (
               <span className="bg-blue-500 text-white font-bold text-[10px] px-2 py-0.5 rounded-full">
@@ -165,37 +202,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </span>
             )}
           </button>
-
-          {/* Status Quick Filters in Sidebar */}
-          <div className="pt-4 pb-2">
-            <p className="px-4 text-[10px] font-bold uppercase tracking-wider text-slate-500">
-              {pt ? 'Filtrar por status' : 'Filter by Status'}
-            </p>
-          </div>
-
-          {[
-            { label: pt ? 'Aguardando compra' : 'Pending Fulfillment', value: 'Pending', dot: 'bg-amber-400' },
-            { label: pt ? 'Em trânsito / faturado' : 'In Transit / Invoiced', value: 'Shipped', dot: 'bg-blue-400' },
-            { label: pt ? 'Entregue' : 'Delivered', value: 'Delivered', dot: 'bg-green-400' },
-            { label: pt ? 'Cancelado' : 'Cancelled', value: 'Cancelled', dot: 'bg-red-400' },
-          ].map((item) => (
-            <button
-              key={item.value}
-              onClick={() => {
-                onSelectStatusFilter(item.value);
-                onSelectTab('orders');
-                onCloseMobile();
-              }}
-              className={`w-full flex items-center gap-2.5 px-4 py-2 rounded-lg text-xs transition-colors text-left ${
-                activeStatusFilter === item.value
-                  ? 'bg-slate-800 text-white font-medium'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-              }`}
-            >
-              <span className={`w-2 h-2 rounded-full ${item.dot}`} />
-              <span>{item.label}</span>
-            </button>
-          ))}
 
           {/* Action Quick Buttons */}
             {canManageOrders && (
@@ -211,7 +217,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 title="Send multiple orders at once"
               >
                 <UploadCloud className="w-4 h-4" />
-                <span>{pt ? 'Enviar vários pedidos' : 'Send Multiple Orders'}</span>
+                {!collapsed && <span>{pt ? 'Enviar vários pedidos' : 'Send Multiple Orders'}</span>}
               </button>
             )}
 
@@ -224,7 +230,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               className="w-full py-2.5 px-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2 shadow-xs transition-all"
             >
               <Plus className="w-4 h-4" />
-              <span>{pt ? 'Inserir novo pedido' : 'Insert New Order'}</span>
+              {!collapsed && <span>{pt ? 'Inserir novo pedido' : 'Insert New Order'}</span>}
             </button>
           </div> 
         )}
@@ -239,7 +245,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         : (user?.email?.slice(0, 2) || 'US').toUpperCase()}
     </div>
 
-    <div className="min-w-0 flex-1">
+    {!collapsed && <div className="min-w-0 flex-1">
       <p className="truncate text-sm font-semibold text-white">
         {isGuest
           ? 'Guest Viewer'
@@ -250,15 +256,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
         {isGuest ? 'Read-only demo' : role}
       </p>
-    </div>
+    </div>}
   </div>
 
   <button
     type="button"
     onClick={() => void signOut()}
-    className="mt-3 w-full rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-300 transition hover:bg-slate-800 hover:text-white"
+    className={`mt-3 w-full rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-300 transition hover:bg-slate-800 hover:text-white ${collapsed ? 'flex justify-center' : ''}`}
   >
-    {isGuest ? 'Exit demo' : 'Sign out'}
+    {collapsed ? <LogOut className="h-4 w-4"/> : isGuest ? (pt ? 'Sair da demonstração' : 'Exit demo') : (pt ? 'Sair' : 'Sign out')}
   </button>
 </div>
       </aside>

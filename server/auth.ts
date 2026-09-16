@@ -27,7 +27,10 @@ export function requireRoles(...allowedRoles: UserRole[]): RequestHandler {
     try {
       const token = getBearerToken(request);
       if (!token) {
-        response.status(401).json({ error: 'Authentication required.' });
+        response.status(401).json({
+          error: 'Você está usando o acesso de visitante, que permite apenas visualizar os dados. Entre com uma conta de Administrador ou Operações para realizar esta ação.',
+          code: 'GUEST_READ_ONLY',
+        });
         return;
       }
 
@@ -49,7 +52,10 @@ export function requireRoles(...allowedRoles: UserRole[]): RequestHandler {
         headers: authHeaders,
       });
       if (!userResponse.ok) {
-        response.status(401).json({ error: 'Invalid or expired session.' });
+        response.status(401).json({
+          error: 'Sua sessão expirou ou não é mais válida. Entre novamente para continuar.',
+          code: 'SESSION_EXPIRED',
+        });
         return;
       }
 
@@ -58,28 +64,53 @@ export function requireRoles(...allowedRoles: UserRole[]): RequestHandler {
         email?: string | null;
       };
       if (!user.id) {
-        response.status(401).json({ error: 'Invalid user session.' });
+        response.status(401).json({
+          error: 'Não foi possível identificar sua conta. Entre novamente para continuar.',
+          code: 'INVALID_SESSION',
+        });
         return;
       }
 
       const profileUrl = new URL(`${supabaseUrl}/rest/v1/user_profiles`);
       profileUrl.searchParams.set('id', `eq.${user.id}`);
-      profileUrl.searchParams.set('select', 'role');
+      profileUrl.searchParams.set('select', 'role,approval_status');
       const profileResponse = await fetch(profileUrl, { headers: authHeaders });
       if (!profileResponse.ok) {
-        response.status(403).json({ error: 'User profile was not found.' });
+        response.status(403).json({
+          error: 'Seu perfil de acesso não foi encontrado. Solicite ao administrador a liberação da sua conta.',
+          code: 'PROFILE_NOT_FOUND',
+        });
         return;
       }
 
-      const profiles = await profileResponse.json() as Array<{ role?: string }>;
+      const profiles = await profileResponse.json() as Array<{ role?: string; approval_status?: string }>;
       const role = profiles[0]?.role as UserRole | undefined;
       if (!role || !validRoles.includes(role)) {
-        response.status(403).json({ error: 'User profile has an invalid role.' });
+        response.status(403).json({
+          error: 'Seu perfil não possui uma função de acesso válida. Solicite ao administrador a correção da sua permissão.',
+          code: 'INVALID_ROLE',
+        });
+        return;
+      }
+
+      if (profiles[0]?.approval_status !== 'approved') {
+        response.status(403).json({
+          error: profiles[0]?.approval_status === 'rejected'
+            ? 'Seu cadastro não foi aprovado pelo administrador do MarketOps.'
+            : 'Seu cadastro está aguardando aprovação de um administrador do MarketOps.',
+          code: profiles[0]?.approval_status === 'rejected' ? 'ACCESS_REJECTED' : 'APPROVAL_PENDING',
+        });
         return;
       }
 
       if (!allowedRoles.includes(role)) {
-        response.status(403).json({ error: 'You do not have permission for this operation.' });
+        const isViewer = role === 'viewer';
+        response.status(403).json({
+          error: isViewer
+            ? 'Seu perfil é Visitante e possui acesso somente para visualização. Entre com uma conta de Administrador ou Operações para realizar esta ação.'
+            : 'Seu perfil atual não possui permissão para realizar esta ação. Solicite acesso ao administrador do MarketOps.',
+          code: isViewer ? 'GUEST_READ_ONLY' : 'INSUFFICIENT_ROLE',
+        });
         return;
       }
 

@@ -4,13 +4,14 @@ import { Header } from './components/Header';
 import { DashboardStats } from './components/DashboardStats';
 import { OrderFiltersBar } from './components/OrderFiltersBar';
 import { OrderTable } from './components/OrderTable';
-import { LiveTrackingCard } from './components/LiveTrackingCard';
+import { InvoicesView } from './components/InvoicesView';
 import { NewOrderModal } from './components/NewOrderModal';
 import { OrderDetailModal } from './components/OrderDetailModal';
 import { AlertsDrawer } from './components/AlertsDrawer';
 import { DatabricksInfoModal } from './components/DatabricksInfoModal';
 import { BatchOrderImportModal } from './components/BatchOrderImportModal';
 import { ReportsDashboard } from './components/ReportsDashboard';
+import { AdminUsersView } from './components/AdminUsersView';
 import { apiFetch } from './lib/api';
 import { useAuth } from './auth/AuthProvider';
 
@@ -25,9 +26,14 @@ import { CheckCircle2, X } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
 export default function App() {
-  const { isGuest, signOut } = useAuth();
+  const { isGuest, role, signOut } = useAuth();
   const [language, setLanguage] = useState<'en' | 'pt'>(() => localStorage.getItem('marketops-ui-language') === 'pt' ? 'pt' : 'en');
-  const [darkMode, setDarkMode] = useState(() => localStorage.getItem('marketops-theme') === 'dark');
+  const [darkMode, setDarkMode] = useState(() => {
+    const savedTheme = localStorage.getItem('marketops-theme');
+    if (savedTheme === 'dark') return true;
+    if (savedTheme === 'light') return false;
+    return typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  });
   // Navigation & UI States
   const [activeTab, setActiveTab] = useState('orders');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -50,7 +56,8 @@ export default function App() {
       if (!saved) return defaults;
       const restored = { ...defaults, ...JSON.parse(saved) };
       if (restored.operational === 'purchased_no_wr_10') restored.operational = 'missing_wr';
-      if (restored.operational === 'eta_invoice_to_cd') restored.operational = 'in_transit_invoiced';
+      if (restored.operational === 'eta_invoice_to_cd') restored.operational = 'All';
+      if (restored.operational === 'in_transit_invoiced') restored.operational = 'All';
       if (restored.operational === 'purchase_no_eta_invoice_20') restored.operational = 'All';
       return restored;
     } catch {
@@ -165,6 +172,17 @@ export default function App() {
     init();
   }, [fetchOrders, fetchStats, fetchAlerts, fetchSellers]);
 
+  // Near-real-time refresh: the server pulls Databricks when due, then the UI refreshes automatically.
+  useEffect(() => {
+    const refreshMs = Math.max(5000, Number(import.meta.env.VITE_LIVE_REFRESH_MS || 10000));
+    const timer = window.setInterval(() => {
+      Promise.all([fetchOrders(), fetchStats()]).catch((error) => {
+        console.error('Live refresh failed:', error);
+      });
+    }, refreshMs);
+    return () => window.clearInterval(timer);
+  }, [fetchOrders, fetchStats]);
+
   // Active tracking order selected for the LiveTrackingCard
   const activeTrackingOrder = useMemo(() => {
     if (selectedTrackingOrderId) {
@@ -174,25 +192,6 @@ export default function App() {
     return orders[0] || null;
   }, [selectedTrackingOrderId, orders]);
 
-  // Most recent order with an invoice among the orders visible in the current filters.
-  // ETA is intentionally not used because it can be a future estimate.
-  const latestInvoicedOrder = useMemo(() => {
-    const getItems = (order: Order) => order.items?.length ? order.items : [order];
-    const getReferenceTime = (order: Order) => {
-      const timestamps = getItems(order)
-        .filter((item) => Boolean(item.invoice?.trim()))
-        .map((item) => item.wr_date || item.marketplace_order_date || item.date_order || item.updated_at)
-        .map((value) => new Date(value).getTime())
-        .filter((value) => Number.isFinite(value));
-      return timestamps.length ? Math.max(...timestamps) : 0;
-    };
-
-    return orders
-      .filter((order) => order.status === 'Shipped' && getItems(order).some((item) => Boolean(item.invoice?.trim())))
-      .slice()
-      .sort((a, b) => getReferenceTime(b) - getReferenceTime(a))[0] || null;
-  }, [orders]);
-
   const filteredStats = useMemo<StatsType | null>(() => {
     if (!stats) return null;
     const lines = orders.flatMap(order => order.items?.length ? order.items : [order]);
@@ -201,7 +200,10 @@ export default function App() {
       ...stats,
       total_orders: orders.length,
       pending_orders: orders.filter(order => order.status === 'Pending' || order.status === 'Processing').length,
-      shipped_orders: orders.filter(order => order.status === 'Shipped').length,
+      shipped_orders: orders.filter(order => {
+        const items = order.items?.length ? order.items : [order];
+        return order.status !== 'Delivered' && order.status !== 'Cancelled' && items.some(item => Boolean(item.invoice?.trim()));
+      }).length,
       delivered_orders: orders.filter(order => order.status === 'Delivered').length,
       cancelled_orders: orders.filter(order => order.status === 'Cancelled').length,
       total_revenue: validLines.reduce((sum, item) => sum + item.total_price, 0),
@@ -215,10 +217,10 @@ export default function App() {
       'Seller', 'Origem (País Seller)', 'Ordem de Cliente', 'Ordem de Compra',
       'Quantidade', 'Preço de venda VKP2 (R$)',
       'Valor Total Compra Seller (USD)', 'Status do Pedido', 'Cliente', 'Email',
-      'Telefone', 'Invoice', 'WR Magaya', 'Transportadora', 'Número de Rastreio',
+      'Telefone', 'CPF', 'Invoice', 'WR Magaya', 'Transportadora', 'Número de Rastreio',
       'Compra no Marketplace Confirmada', 'Data da Confirmação da Compra',
-      'Status da Entrega', 'Previsão de Entrega', 'Data Real da Entrega', 'Data WR', 'ETA', 'Data DI',
-      'Entrada CD', 'Entrega ao Cliente', 'Origem Logística', 'Destino', 'Última Sincronização Databricks',
+      'Status da Entrega', 'Previsão de Entrega', 'Data Real da Entrega', 'Data WR', 'ETD', 'ETA', 'Data DI',
+      'Entrada CD', 'Data de Faturamento', 'Entrega ao Cliente', 'Origem Logística', 'Destino', 'Última Atualização Logística',
       'Justificativa do Cancelamento', 'Data da Atualização do Cancelamento', 'Eventos da Entrega'
     ];
 
@@ -229,11 +231,11 @@ export default function App() {
         item.seller_country || '', String(item.customer_order_id || ''), String(item.purchase_order || item.id),
         item.quantity, item.vkp2_price ?? '',
         item.seller_usd_total ?? item.total_price, item.status, item.customer_name,
-        item.customer_email, item.customer_phone || '', item.invoice || '', item.magaya_wr || '',
+        item.customer_email, item.customer_phone || '', item.customer_cpf || '', item.invoice || '', item.magaya_wr || '',
         item.shipment.carrier, String(item.shipment.tracking_number || ''),
         item.marketplace_purchase_confirmed ? 'SIM' : 'NÃO', item.marketplace_purchase_confirmed_at || '', item.shipment.shipment_status,
-        String(item.shipment.estimated_delivery || ''), String(item.shipment.actual_delivery_date || ''), item.wr_date || '', item.eta || '', item.di_date || '',
-        item.entry_cd_date || '', item.delivery_client_date || '', item.shipment.origin_hub, item.shipment.destination,
+        String(item.shipment.estimated_delivery || ''), String(item.shipment.actual_delivery_date || ''), item.wr_date || '', item.etd || '', item.eta || '', item.di_date || '',
+        item.entry_cd_date || '', item.billing_date || '', item.delivery_client_date || '', item.shipment.origin_hub, item.shipment.destination,
         item.shipment.databricks_sync_time, item.cancellation_reason || '', item.cancellation_updated_at || '',
         item.shipment.events.map((event) => `${event.timestamp} | ${event.status} | ${event.location} | ${event.description}`).join(' / ')
       ]);
@@ -245,7 +247,7 @@ export default function App() {
     }));
 
     // Keep identifiers and dates as text; keep quantities and monetary fields numeric.
-    const textColumns = [0, 1, 3, 6, 7, 18, 20, 22, 23, 24, 25, 26, 27, 28, 33];
+    const textColumns = [0, 1, 3, 6, 7, 14, 19, 21, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 37];
     for (let row = 1; row <= lines.length; row += 1) {
       textColumns.forEach((column) => {
         const address = XLSX.utils.encode_cell({ r: row, c: column });
@@ -272,7 +274,7 @@ export default function App() {
     fetchAlerts();
     fetchSellers();
     showToast(
-      'Order Registered & Databricks Queued',
+      language === 'pt' ? 'Pedido registrado' : 'Order registered',
       `Order ${newOrder.id} for ${newOrder.customer_name} placed. Tracking is awaiting seller dispatch.`
     );
   };
@@ -330,6 +332,32 @@ export default function App() {
       if (previousSelectedOrder) setSelectedOrder(previousSelectedOrder);
       const message = error instanceof Error ? error.message : 'Erro desconhecido.';
       showToast('Falha ao salvar', `A confirmação não foi gravada. ${message}`);
+      throw error;
+    }
+  };
+
+  const handleSaveOrderNotes = async (orderId: string, notes: string) => {
+    try {
+      const res = await apiFetch(`/api/orders/${encodeURIComponent(orderId)}/notes`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ notes }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Não foi possível salvar a observação do pedido.');
+
+      setOrders(prev => prev.map(order => order.id === orderId ? data.order : order));
+      setSelectedOrder(prev => prev?.id === orderId ? data.order : prev);
+      setOrderUpdateSignal(value => value + 1);
+      showToast(
+        language === 'pt' ? 'Observação salva' : 'Order note saved',
+        language === 'pt'
+          ? `A observação da PO ${data.order.purchase_order || data.order.id} foi atualizada.`
+          : `The note for PO ${data.order.purchase_order || data.order.id} was updated.`,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : (language === 'pt' ? 'Não foi possível salvar a observação.' : 'Could not save the order note.');
+      showToast(language === 'pt' ? 'Falha ao salvar observação' : 'Could not save note', message);
       throw error;
     }
   };
@@ -425,6 +453,26 @@ export default function App() {
     }
   };
 
+  const handleRestoreCancellation = async (orderId: string) => {
+    try {
+      const res = await apiFetch(`/api/orders/${encodeURIComponent(orderId)}/restore-cancellation`, { method: 'PATCH' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Não foi possível desfazer o cancelamento.');
+      setOrders(prev => prev.map(order => order.id === orderId ? data.order : order));
+      setSelectedOrder(data.order);
+      await Promise.all([fetchOrders(), fetchStats(), fetchAlerts()]);
+      setOrderUpdateSignal(value => value + 1);
+      showToast(
+        language === 'pt' ? 'Cancelamento desfeito' : 'Cancellation Reversed',
+        language === 'pt' ? 'O pedido voltou ao status calculado pelos dados logísticos.' : 'The order returned to the status calculated from logistics data.'
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Não foi possível desfazer o cancelamento.';
+      showToast(language === 'pt' ? 'Falha ao desfazer' : 'Restore failed', message);
+      throw error;
+    }
+  };
+
   // Handle Batch Orders Ingestion (Multiple Orders at Once)
   const handleBatchOrdersImported = async (importedOrders: Order[]) => {
     // Reload from the API so product lines sharing the same customer order / PO
@@ -439,11 +487,11 @@ export default function App() {
     fetchSellers();
     showToast(
       'Batch Orders Sent Successfully!',
-      `${importedOrders.length} orders sent and processed into MarketOps & Databricks Lakehouse.`
+      language === 'pt' ? `${importedOrders.length} pedidos importados e reconciliados no MarketOps.` : `${importedOrders.length} orders imported and reconciled in MarketOps.`
     );
   };
 
-  // Trigger Databricks Sync for a specific order
+  // Demo logistics reconciliation for a specific order
   const handleSyncOrderDatabricks = async (orderId: string, targetStatus?: string) => {
     setSyncingOrderId(orderId);
     try {
@@ -453,7 +501,7 @@ export default function App() {
         body: JSON.stringify({ target_status: targetStatus }),
       });
 
-      if (!res.ok) throw new Error('Databricks sync failed');
+      if (!res.ok) throw new Error(language === 'pt' ? 'Falha na reconciliação logística' : 'Logistics reconciliation failed');
       const data = await res.json();
 
       // Update in orders list
@@ -473,8 +521,8 @@ export default function App() {
       fetchAlerts();
 
       showToast(
-        `Databricks Checkpoint: ${data.order.shipment.shipment_status}`,
-        `Tracking ${data.order.shipment.tracking_number} updated. Automated email & push alert dispatched!`
+        language === 'pt' ? `Status reconciliado: ${data.order.shipment.shipment_status}` : `Reconciled status: ${data.order.shipment.shipment_status}`,
+        language === 'pt' ? `Rastreio ${data.order.shipment.tracking_number || '—'} atualizado. Confira o histórico para saber se o e-mail foi enviado ou simulado.` : `Tracking ${data.order.shipment.tracking_number || '—'} updated. Check alert history to see whether email was sent or simulated.`
       );
 
       // Trigger browser notification if permitted
@@ -490,16 +538,16 @@ export default function App() {
     }
   };
 
-  // Trigger Bulk Databricks Sync
+  // Demo bulk logistics reconciliation
   const handleSyncAll = async () => {
     setIsSyncingAll(true);
     try {
       const res = await apiFetch('/api/databricks/sync-all', { method: 'POST' });
-      if (!res.ok) throw new Error('Failed to bulk sync Databricks');
+      if (!res.ok) throw new Error(language === 'pt' ? 'Falha na reconciliação em lote' : 'Bulk reconciliation failed');
       const data = await res.json();
 
       await Promise.all([fetchOrders(), fetchStats(), fetchAlerts()]);
-      showToast('Databricks Lakehouse Synchronized', data.message);
+      showToast(language === 'pt' ? 'Reconciliação logística concluída' : 'Logistics reconciliation complete', data.message);
     } catch (err: any) {
       console.error('Bulk sync error:', err);
     } finally {
@@ -541,18 +589,46 @@ export default function App() {
   };
 
   // Trigger manual test delivery alert
-  const handleTriggerTestAlert = async (orderId: string, eventType: string, customMsg?: string) => {
+  const handleTriggerTestAlert = async (orderId: string, eventType: string, customMsg?: string, recipientEmail?: string) => {
     const res = await apiFetch('/api/alerts/test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ order_id: orderId, event_type: eventType, message: customMsg }),
+      body: JSON.stringify({ order_id: orderId, event_type: eventType, message: customMsg, recipient_email: recipientEmail }),
     });
-    if (!res.ok) throw new Error('Failed to dispatch alert test');
-    fetchAlerts();
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Failed to dispatch alert test');
+    await fetchAlerts();
+    if (data.alert?.status === 'failed') throw new Error(data.alert.delivery_detail || 'SMTP failed to send the alert.');
   };
 
+  const handleSendDailyAlerts = async (date: string) => {
+    const res = await apiFetch('/api/alerts/send-daily', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ date }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Failed to send daily alerts');
+    await fetchAlerts();
+    return data as { found: number; sent: number; simulated: number; failed: number; skipped: number; recipients: string[] };
+  };
+
+  const handleLoadDailyChanges = useCallback(async (date: string) => {
+    const res = await apiFetch(`/api/alerts/changes?date=${encodeURIComponent(date)}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Failed to load daily changes');
+    return (data.changes || []) as Array<{ order_id: string; customer_name: string; status: string }>;
+  }, []);
+
+  const handleLoadChangeDates = useCallback(async () => {
+    const res = await apiFetch('/api/alerts/change-dates');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Failed to load dates with changes');
+    return (data.dates || []) as Array<{ date: string; count: number }>;
+  }, []);
+
   return (
-    <div className="flex h-screen w-full bg-slate-50 overflow-hidden font-sans text-slate-800 antialiased">
+    <div className="marketops-shell flex h-screen w-full bg-slate-50 overflow-hidden font-sans text-slate-800 antialiased">
       {/* Sleek Dark Left Sidebar */}
       <Sidebar
         currentTab={activeTab}
@@ -621,6 +697,10 @@ export default function App() {
           
           {activeTab === 'dashboard' ? (
             <ReportsDashboard orders={orders} stats={filteredStats} />
+          ) : activeTab === 'invoices' ? (
+            <InvoicesView orders={orders} language={language} onOpenOrder={setSelectedOrder} />
+          ) : activeTab === 'admin-users' && role === 'admin' ? (
+            <AdminUsersView />
           ) : (
             <>
           {/* Top KPI Metric Cards & Lakehouse Status */}
@@ -674,13 +754,6 @@ export default function App() {
             </div>
 
             {/* Right Live Tracking Card */}
-            <div className="w-full xl:w-88 2xl:w-96 shrink-0">
-              <LiveTrackingCard
-                order={latestInvoicedOrder}
-                language={language}
-                onViewFullOrder={(order) => setSelectedOrder(order)}
-              />
-            </div>
           </div>
             </>
           )}
@@ -709,7 +782,9 @@ export default function App() {
         onCancelOrder={handleCancelOrder}
         onSendManualAlert={handleTriggerTestAlert}
         onConfirmMarketplacePurchase={handleMarketplacePurchaseConfirmation}
+        onSaveOrderNotes={handleSaveOrderNotes}
         onSaveCancellationReason={handleSaveCancellationReason}
+        onRestoreCancellation={handleRestoreCancellation}
         language={language}
       />
 
@@ -718,7 +793,10 @@ export default function App() {
         onClose={() => setIsAlertsDrawerOpen(false)}
         alerts={alerts}
         orders={orders}
-        onTriggerTestAlert={handleTriggerTestAlert}
+        onSendDailyAlerts={handleSendDailyAlerts}
+        onLoadDailyChanges={handleLoadDailyChanges}
+        onLoadChangeDates={handleLoadChangeDates}
+        language={language}
       />
 
       <DatabricksInfoModal
@@ -726,6 +804,7 @@ export default function App() {
         onClose={() => setIsDatabricksModalOpen(false)}
         onTriggerSyncAll={handleSyncAll}
         isSyncing={isSyncingAll}
+        language={language}
       />
 
       {/* Toast Alert Feedback */}

@@ -4,9 +4,9 @@ export async function apiFetch(
   input: RequestInfo | URL,
   init: RequestInit = {}
 ) {
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
+  const session = supabase
+    ? (await supabase.auth.getSession()).data.session
+    : null;
 
   const headers = new Headers(init.headers);
 

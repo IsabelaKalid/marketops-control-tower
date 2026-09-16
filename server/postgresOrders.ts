@@ -19,15 +19,17 @@ export const postgresEnabled = () =>
 export async function loadOrdersFromPostgres(): Promise<Order[]> {
   if (!postgresEnabled()) return [];
 
-  pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: String(process.env.DATABASE_SSL || 'true').toLowerCase() === 'true'
-      ? { rejectUnauthorized: false }
-      : undefined,
-    max: 5,
-    idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: 10_000,
-  });
+  if (!pool) {
+    pool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: String(process.env.DATABASE_SSL || 'true').toLowerCase() === 'true'
+        ? { rejectUnauthorized: false }
+        : undefined,
+      max: 5,
+      idleTimeoutMillis: 30_000,
+      connectionTimeoutMillis: 10_000,
+    });
+  }
 
   const client = await pool.connect();
   try {
@@ -38,6 +40,9 @@ export async function loadOrdersFromPostgres(): Promise<Order[]> {
         o.purchase_order,
         o.customer_order_id,
         o.customer_name,
+        o.customer_email,
+        o.customer_phone,
+        o.customer_cpf,
         o.purchase_date,
         o.seller,
         o.seller_country,
@@ -48,6 +53,13 @@ export async function loadOrdersFromPostgres(): Promise<Order[]> {
         o.purchase_confirmed_at,
         o.cancellation_reason,
         o.cancelled_at,
+        coalesce((
+          select e.description
+          from public.order_events e
+          where e.order_id = o.id and e.event_type = 'order_note'
+          order by e.occurred_at desc, e.created_at desc
+          limit 1
+        ), '') as notes,
         o.created_at as order_created_at,
         o.updated_at as order_updated_at,
         oi.id as database_item_id,
@@ -78,7 +90,9 @@ export async function loadOrdersFromPostgres(): Promise<Order[]> {
         l.invoice,
         l.di_date,
         l.entry_cd_date,
+        l.billing_date,
         l.customer_delivery_date,
+        l.destination,
         l.last_source_sync_at,
         coalesce((
           select json_agg(json_build_object(
@@ -111,7 +125,9 @@ export async function loadOrdersFromPostgres(): Promise<Order[]> {
         id: `${row.purchase_order}-${row.sequential}-${row.material}`,
         date_order: dateOnly(row.purchase_date) || '',
         customer_name: row.customer_name,
-        customer_email: '',
+        customer_email: row.customer_email || '',
+        customer_phone: row.customer_phone || undefined,
+        customer_cpf: row.customer_cpf || undefined,
         sku: row.material,
         product_name: row.description,
         asin: row.asin || '',
@@ -120,6 +136,7 @@ export async function loadOrdersFromPostgres(): Promise<Order[]> {
         total_price: Number(row.seller_total_usd || 0),
         status,
         marketplace: row.seller,
+        notes: row.notes || undefined,
         shipment: {
           is_shipped: status === 'Shipped' || status === 'Delivered',
           carrier: row.carrier || '',
@@ -128,7 +145,7 @@ export async function loadOrdersFromPostgres(): Promise<Order[]> {
           actual_delivery_date: customerDelivery || null,
           shipment_status: shipmentStatus,
           databricks_sync_time: syncTime,
-          destination: 'Customer destination',
+          destination: row.destination || 'Não informado',
           origin_hub: row.seller_country || '',
           events: Array.isArray(row.events) ? row.events.map((event: any) => ({
             id: String(event.id),
@@ -150,6 +167,7 @@ export async function loadOrdersFromPostgres(): Promise<Order[]> {
         destination_hub: 'Demo Distribution Center',
         delivery_client_date: customerDelivery,
         entry_cd_date: dateOnly(row.entry_cd_date),
+        billing_date: dateOnly(row.billing_date),
         sequencial: row.sequential,
         sts_compra: status === 'Delivered' ? 'ENTREGUE' : status === 'Cancelled' ? 'CANCELADO' : 'COMPRADO',
         unit_measure: row.unit_measure,
@@ -185,6 +203,39 @@ const requirePool = () => {
   if (!pool || !postgresEnabled()) throw new Error('PostgreSQL is not connected.');
   return pool;
 };
+
+export async function saveOrderNotesToPostgres(
+  purchaseOrder: string,
+  notes: string,
+  updatedBy?: string,
+) {
+  const db = requirePool();
+  const client = await db.connect();
+  try {
+    await client.query('begin');
+    const orderResult = await client.query(
+      `update public.orders
+       set updated_at = now()
+       where purchase_order = $1
+       returning id`,
+      [purchaseOrder],
+    );
+    if (!orderResult.rowCount) throw new Error(`Order ${purchaseOrder} was not found in PostgreSQL.`);
+
+    await client.query(
+      `insert into public.order_events (
+         order_id, event_type, event_status, event_location, description, occurred_at
+       ) values ($1, 'order_note', 'Saved', $2, $3, now())`,
+      [orderResult.rows[0].id, updatedBy ? `Admin Portal - ${updatedBy}` : 'Admin Portal', notes],
+    );
+    await client.query('commit');
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
 
 export async function savePurchaseConfirmationToPostgres(
   purchaseOrder: string,
@@ -258,6 +309,60 @@ export async function saveCancellationToPostgres(
   }
 }
 
+
+export async function restoreCancellationInPostgres(
+  items: Order[],
+  restoredBy?: string,
+) {
+  if (!items.length) return;
+  const db = requirePool();
+  const client = await db.connect();
+  const summary = items[0];
+  const purchaseOrder = summary.purchase_order || summary.id;
+  try {
+    await client.query('begin');
+    const updated = await client.query(
+      `update public.orders
+       set status = $2, status_text = null, cancellation_reason = null,
+           cancelled_at = null, updated_at = now()
+       where purchase_order = $1
+       returning id`,
+      [purchaseOrder, summary.status],
+    );
+    if (!updated.rowCount) throw new Error(`Order ${purchaseOrder} was not found in PostgreSQL.`);
+
+    for (const item of items) {
+      await client.query(
+        `update public.logistics l
+         set delivery_status = $4, customer_delivery_date = $5, updated_at = now()
+         from public.order_items oi
+         where l.order_item_id = oi.id and oi.order_id = $1
+           and oi.sequential = $2 and oi.material = $3`,
+        [
+          updated.rows[0].id,
+          item.sequencial || '10',
+          item.sku,
+          item.shipment.shipment_status,
+          item.delivery_client_date || null,
+        ],
+      );
+    }
+
+    await client.query(
+      `insert into public.order_events (order_id, event_type, event_status, event_location, description, occurred_at)
+       values ($1, 'cancellation_reversed', $2, 'Admin Portal', $3, now())`,
+      [updated.rows[0].id, summary.shipment.shipment_status, `Cancellation reversed by ${restoredBy || 'Dashboard user'}.`],
+    );
+
+    await client.query('commit');
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function insertOrdersToPostgres(items: Order[]) {
   if (!items.length) return;
   const db = requirePool();
@@ -268,13 +373,16 @@ export async function insertOrdersToPostgres(items: Order[]) {
       const purchaseOrder = item.purchase_order || item.id;
       const orderResult = await client.query(
         `insert into public.orders (
-           purchase_order, customer_order_id, customer_name, purchase_date,
+           purchase_order, customer_order_id, customer_name, customer_email, customer_phone, customer_cpf, purchase_date,
            seller, seller_country, status, status_text, delivery_limit_days,
            purchase_confirmed, purchase_confirmed_at, cancellation_reason, cancelled_at
-         ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+         ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
          on conflict (purchase_order) do update set
            customer_order_id = excluded.customer_order_id,
            customer_name = excluded.customer_name,
+           customer_email = excluded.customer_email,
+           customer_phone = excluded.customer_phone,
+           customer_cpf = excluded.customer_cpf,
            seller = excluded.seller,
            seller_country = excluded.seller_country,
            status = excluded.status,
@@ -285,6 +393,9 @@ export async function insertOrdersToPostgres(items: Order[]) {
           purchaseOrder,
           item.customer_order_id || purchaseOrder,
           item.customer_name,
+          item.customer_email || null,
+          item.customer_phone || null,
+          item.customer_cpf || null,
           item.date_order.slice(0, 10),
           item.marketplace,
           item.seller_country || null,
@@ -334,9 +445,9 @@ export async function insertOrdersToPostgres(items: Order[]) {
            order_item_id, marketplace_order_date, marketplace_order_id,
            account_group, account_order_status, account_user, delivery_status,
            expected_delivery_date, carrier, carrier_tracking, wr_date,
-           warehouse_receipt, eta, etd, invoice, di_date, entry_cd_date,
-           customer_delivery_date, last_source_sync_at
-         ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+           warehouse_receipt, eta, etd, invoice, di_date, entry_cd_date, billing_date,
+           customer_delivery_date, destination, last_source_sync_at
+         ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
          on conflict (order_item_id) do update set
            delivery_status = excluded.delivery_status,
            expected_delivery_date = excluded.expected_delivery_date,
@@ -349,7 +460,9 @@ export async function insertOrdersToPostgres(items: Order[]) {
            invoice = excluded.invoice,
            di_date = excluded.di_date,
            entry_cd_date = excluded.entry_cd_date,
+           billing_date = excluded.billing_date,
            customer_delivery_date = excluded.customer_delivery_date,
+           destination = excluded.destination,
            last_source_sync_at = excluded.last_source_sync_at,
            updated_at = now()`,
         [
@@ -370,7 +483,9 @@ export async function insertOrdersToPostgres(items: Order[]) {
           item.invoice || null,
           item.di_date || null,
           item.entry_cd_date || null,
+          item.billing_date || null,
           item.delivery_client_date || null,
+          item.shipment.destination || null,
           item.shipment.databricks_sync_time || null,
         ],
       );
@@ -395,10 +510,11 @@ export async function saveOrderStateToPostgres(items: Order[]) {
     const updated = await client.query(
       `update public.orders
        set status = $2, status_text = $3, cancellation_reason = $4,
-           cancelled_at = $5, updated_at = now()
+           cancelled_at = $5, customer_email = $6, customer_phone = $7,
+           customer_cpf = $8, updated_at = now()
        where purchase_order = $1
        returning id`,
-      [purchaseOrder, summary.status, summary.status_text || null, summary.cancellation_reason || null, summary.cancellation_updated_at || null],
+      [purchaseOrder, summary.status, summary.status_text || null, summary.cancellation_reason || null, summary.cancellation_updated_at || null, summary.customer_email || null, summary.customer_phone || null, summary.customer_cpf || null],
     );
     if (!updated.rowCount) throw new Error(`Order ${purchaseOrder} was not found in PostgreSQL.`);
 
@@ -406,7 +522,9 @@ export async function saveOrderStateToPostgres(items: Order[]) {
       await client.query(
         `update public.logistics l
          set delivery_status = $4, carrier = $5, carrier_tracking = $6,
-             expected_delivery_date = $7, customer_delivery_date = $8, updated_at = now()
+             expected_delivery_date = $7, customer_delivery_date = $8,
+             entry_cd_date = $9, billing_date = $10, eta = $11, etd = $12, destination = $13,
+             updated_at = now()
          from public.order_items oi
          where l.order_item_id = oi.id and oi.order_id = $1
            and oi.sequential = $2 and oi.material = $3`,
@@ -419,6 +537,11 @@ export async function saveOrderStateToPostgres(items: Order[]) {
           item.shipment.tracking_number || null,
           item.shipment.estimated_delivery?.slice(0, 10) || null,
           item.delivery_client_date || null,
+          item.entry_cd_date || null,
+          item.billing_date || null,
+          item.eta || null,
+          item.etd || null,
+          item.shipment.destination || null,
         ],
       );
     }

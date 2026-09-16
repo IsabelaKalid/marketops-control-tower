@@ -4,15 +4,15 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabasePublishableKey =
   import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 
-if (!supabaseUrl || !supabasePublishableKey) {
-  throw new Error(
-    'Supabase authentication variables are not configured.'
-  );
-}
+export const supabaseConfigured = Boolean(
+  supabaseUrl &&
+  supabasePublishableKey &&
+  /^https:\/\/[^/]+\.supabase\.co\/?$/i.test(supabaseUrl)
+);
 
-export const supabase = createClient(
-  supabaseUrl,
-  supabasePublishableKey,
+export const supabase = supabaseConfigured ? createClient(
+  supabaseUrl!,
+  supabasePublishableKey!,
   {
     auth: {
       persistSession: true,
@@ -20,4 +20,4 @@ export const supabase = createClient(
       detectSessionInUrl: true,
     },
   }
-);
+) : null;

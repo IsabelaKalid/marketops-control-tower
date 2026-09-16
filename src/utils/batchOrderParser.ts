@@ -18,11 +18,15 @@ export interface ParsedBatchOrder {
   total_price?: number;
   customer_name?: string;
   customer_email?: string;
+  customer_phone?: string;
+  customer_cpf?: string;
   invoice?: string;
   wr_date?: string;
   eta?: string;
+  etd?: string;
   di_date?: string;
   entry_cd_date?: string;
+  billing_date?: string;
   delivery_client_date?: string;
   raw_row_index: number;
   isValid: boolean;
@@ -208,9 +212,14 @@ export function parseBatchOrderText(
   let colInvoice = -1;
   let colWrDate = -1;
   let colEta = -1;
+  let colEtd = -1;
   let colDiDate = -1;
   let colEntryCd = -1;
+  let colBillingDate = -1;
   let colDeliveryClient = -1;
+  let colCustomerEmail = -1;
+  let colCustomerPhone = -1;
+  let colCustomerCpf = -1;
 
   if (isHeaderRow) {
     headers.forEach((h, idx) => {
@@ -219,6 +228,11 @@ export function parseBatchOrderText(
       if (h === 'entrada_cd' || h.includes('entrada cd')) { colEntryCd = idx; return; }
       if (h === 'entrega_cliente' || h.includes('entrega cliente')) { colDeliveryClient = idx; return; }
       if (h === 'eta') { colEta = idx; return; }
+      if (h === 'etd') { colEtd = idx; return; }
+      if (h === 'cpf' || h.includes('cpf')) { colCustomerCpf = idx; return; }
+      if (h === 'email' || h.includes('e-mail')) { colCustomerEmail = idx; return; }
+      if (h.includes('telefone') || h.includes('phone')) { colCustomerPhone = idx; return; }
+      if (h === 'billing_date' || h.includes('data de faturamento') || h.includes('faturamento')) { colBillingDate = idx; return; }
       if (h === 'invoice' || h.includes('invoice')) { colInvoice = idx; return; }
       if (h.includes('data da compra') || (h.includes('data') && !h.includes('entrega')) || h.includes('date')) {
         colDate = idx;
@@ -323,9 +337,14 @@ export function parseBatchOrderText(
     const rawInvoice = colInvoice >= 0 && cols[colInvoice] !== undefined ? cols[colInvoice] : '';
     const rawWrDate = colWrDate >= 0 && cols[colWrDate] !== undefined ? cols[colWrDate] : '';
     const rawEta = colEta >= 0 && cols[colEta] !== undefined ? cols[colEta] : '';
+    const rawEtd = colEtd >= 0 && cols[colEtd] !== undefined ? cols[colEtd] : '';
     const rawDiDate = colDiDate >= 0 && cols[colDiDate] !== undefined ? cols[colDiDate] : '';
     const rawEntryCd = colEntryCd >= 0 && cols[colEntryCd] !== undefined ? cols[colEntryCd] : '';
+    const rawBillingDate = colBillingDate >= 0 && cols[colBillingDate] !== undefined ? cols[colBillingDate] : '';
     const rawDeliveryClient = colDeliveryClient >= 0 && cols[colDeliveryClient] !== undefined ? cols[colDeliveryClient] : '';
+    const rawCustomerEmail = colCustomerEmail >= 0 && cols[colCustomerEmail] !== undefined ? cols[colCustomerEmail] : '';
+    const rawCustomerPhone = colCustomerPhone >= 0 && cols[colCustomerPhone] !== undefined ? cols[colCustomerPhone] : '';
+    const rawCustomerCpf = colCustomerCpf >= 0 && cols[colCustomerCpf] !== undefined ? cols[colCustomerCpf] : '';
 
     // Status mapping
     const mapped = mapStsCompra(rawStsCompra, defaultStatus);
@@ -337,7 +356,7 @@ export function parseBatchOrderText(
     } else if (rawDeliveryClient) {
       orderStatus = 'Delivered';
       stsCompraClean = 'ENTREGUE';
-    } else if (rawInvoice || rawWrDate || rawDiDate || rawEntryCd || rawEta) {
+    } else if (rawInvoice || rawWrDate || rawDiDate || rawEntryCd || rawBillingDate || rawEta || rawEtd) {
       orderStatus = 'Shipped';
     } else {
       orderStatus = 'Pending';
@@ -434,11 +453,16 @@ export function parseBatchOrderText(
       price_unit: priceUnit,
       total_price: totalPrice,
       customer_name: rawCustomerOrder ? `Cliente Marketplace #${rawCustomerOrder}` : `Cliente Marketplace Manaus`,
+      customer_email: rawCustomerEmail || undefined,
+      customer_phone: rawCustomerPhone || undefined,
+      customer_cpf: rawCustomerCpf || undefined,
       invoice: rawInvoice || undefined,
       wr_date: rawWrDate ? normalizeDate(rawWrDate) : undefined,
       eta: rawEta ? normalizeDate(rawEta) : undefined,
+      etd: rawEtd ? normalizeDate(rawEtd) : undefined,
       di_date: rawDiDate ? normalizeDate(rawDiDate) : undefined,
       entry_cd_date: rawEntryCd ? normalizeDate(rawEntryCd) : undefined,
+      billing_date: rawBillingDate ? normalizeDate(rawBillingDate) : undefined,
       delivery_client_date: rawDeliveryClient ? normalizeDate(rawDeliveryClient) : undefined,
       raw_row_index: rowIndex + (isHeaderRow ? 2 : 1),
       isValid,

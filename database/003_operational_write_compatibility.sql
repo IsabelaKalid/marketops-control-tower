@@ -1,6 +1,8 @@
 begin;
 
 alter table public.orders
+  add column if not exists customer_email text,
+  add column if not exists customer_phone text,
   add column if not exists purchase_confirmed boolean not null default false,
   add column if not exists purchase_confirmed_at timestamptz,
   add column if not exists cancellation_reason text,

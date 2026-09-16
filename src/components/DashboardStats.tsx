@@ -1,13 +1,13 @@
 import React from 'react';
-import { 
-  Package, 
-  Clock, 
-  Truck, 
-  CheckCircle2, 
-  XCircle, 
+import {
+  Package,
+  Clock3,
+  ReceiptText,
+  CheckCircle2,
+  XCircle,
   DollarSign,
-  Database,
-  ArrowUpRight
+  ArrowUpRight,
+  LucideIcon,
 } from 'lucide-react';
 import { DashboardStats as StatsType } from '../types';
 
@@ -19,6 +19,16 @@ interface DashboardStatsProps {
   language?: 'en' | 'pt';
 }
 
+type StatCard = {
+  id: string;
+  label: string;
+  value: string;
+  description: string;
+  filterValue: string;
+  icon: LucideIcon;
+  iconClass: string;
+};
+
 export const DashboardStats: React.FC<DashboardStatsProps> = ({
   stats,
   activeStatusFilter,
@@ -29,123 +39,154 @@ export const DashboardStats: React.FC<DashboardStatsProps> = ({
   const pt = language === 'pt';
   if (!stats) return null;
 
-  const deliveryRate = stats.total_orders > 0 
-    ? `${((stats.delivered_orders / stats.total_orders) * 100).toFixed(1)}%` 
-    : '100%';
+  const deliveryRate = stats.total_orders > 0
+    ? ((stats.delivered_orders / stats.total_orders) * 100).toFixed(1)
+    : '0.0';
+  const cancellationRate = stats.total_orders > 0
+    ? ((stats.cancelled_orders / stats.total_orders) * 100).toFixed(1)
+    : '0.0';
+  const revenueBrl = new Intl.NumberFormat('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(stats.total_sales_brl);
 
-  const statCards = [
+  const statCards: StatCard[] = [
     {
       id: 'stat-total',
       label: pt ? 'Total de pedidos' : 'Total Orders',
-      value: stats.total_orders.toLocaleString(),
-      badgeText: '+12%',
-      badgeClass: 'text-green-500 font-bold bg-green-50 px-2 py-0.5 rounded text-xs',
+      value: stats.total_orders.toLocaleString('pt-BR'),
+      description: pt ? 'Pedidos nos filtros atuais' : 'Orders in the current filters',
       filterValue: 'All',
-      color: 'text-slate-900',
+      icon: Package,
+      iconClass: 'bg-indigo-50 text-indigo-600 ring-indigo-100',
     },
     {
       id: 'stat-pending',
       label: pt ? 'Pendentes' : 'Pending',
-      value: stats.pending_orders.toLocaleString(),
-      badgeText: 'Critical',
-      badgeClass: 'text-amber-500 font-bold bg-amber-50 px-2 py-0.5 rounded text-xs',
+      value: stats.pending_orders.toLocaleString('pt-BR'),
+      description: pt ? 'Aguardando avanço operacional' : 'Waiting for operational progress',
       filterValue: 'Pending',
-      color: 'text-slate-900',
+      icon: Clock3,
+      iconClass: 'bg-amber-50 text-amber-600 ring-amber-100',
     },
     {
       id: 'stat-in-transit',
       label: pt ? 'Em trânsito' : 'In Transit',
-      value: stats.shipped_orders.toLocaleString(),
-      badgeText: 'Invoiced',
-      badgeClass: 'text-blue-600 font-bold bg-blue-50 px-2 py-0.5 rounded text-xs',
+      value: stats.shipped_orders.toLocaleString('pt-BR'),
+      description: pt ? 'Com invoice e ainda não entregues' : 'Invoiced and not yet delivered',
       filterValue: 'Shipped',
-      color: 'text-blue-600',
+      icon: ReceiptText,
+      iconClass: 'bg-blue-50 text-blue-600 ring-blue-100',
     },
     {
       id: 'stat-delivered',
       label: pt ? 'Entregues' : 'Delivered',
-      value: stats.delivered_orders.toLocaleString(),
-      badgeText: `${deliveryRate} Rate`,
-      badgeClass: 'text-slate-500 text-xs font-medium',
+      value: stats.delivered_orders.toLocaleString('pt-BR'),
+      description: pt ? `${deliveryRate}% dos pedidos` : `${deliveryRate}% of orders`,
       filterValue: 'Delivered',
-      color: 'text-blue-600',
+      icon: CheckCircle2,
+      iconClass: 'bg-emerald-50 text-emerald-600 ring-emerald-100',
     },
     {
       id: 'stat-cancelled',
       label: pt ? 'Cancelados' : 'Cancelled',
-      value: stats.cancelled_orders.toLocaleString(),
-      badgeText: '-4%',
-      badgeClass: 'text-red-500 font-bold bg-red-50 px-2 py-0.5 rounded text-xs',
+      value: stats.cancelled_orders.toLocaleString('pt-BR'),
+      description: pt ? `${cancellationRate}% dos pedidos` : `${cancellationRate}% of orders`,
       filterValue: 'Cancelled',
-      color: 'text-red-500',
+      icon: XCircle,
+      iconClass: 'bg-rose-50 text-rose-600 ring-rose-100',
     },
     {
       id: 'stat-revenue',
       label: pt ? 'Faturamento (BRL)' : 'Sales Revenue (BRL)',
-      value: `R$ ${stats.total_sales_brl.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-      badgeText: pt ? 'Vendas filtradas' : 'Filtered Sales',
-      badgeClass: 'text-slate-500 text-xs font-medium',
+      value: revenueBrl,
+      description: pt ? 'Valor total vendido nos filtros atuais' : 'Total sales in the current filters',
       filterValue: 'All',
-      color: 'text-slate-900',
-    }
+      icon: DollarSign,
+      iconClass: 'bg-emerald-50 text-emerald-600 ring-emerald-100',
+    },
   ];
 
   return (
     <div className="space-y-4">
-      {/* Sleek KPI Cards Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6 gap-4 sm:gap-5">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {statCards.map((card) => {
+          const Icon = card.icon;
           const isSelected = activeStatusFilter === card.filterValue && card.filterValue !== 'All';
+          const isRevenue = card.id === 'stat-revenue';
 
           return (
             <button
               key={card.id}
               id={card.id}
+              type="button"
               onClick={() => onSelectStatus(card.filterValue)}
-              className={`bg-white p-5 sm:p-6 min-h-32 min-w-0 overflow-hidden rounded-2xl shadow-sm border transition-all text-left group ${
-                isSelected 
-                  ? 'border-blue-500 ring-2 ring-blue-500/20 shadow-md' 
-                  : 'border-slate-200/80 hover:border-slate-300 hover:shadow-md'
+              className={`group relative min-w-0 overflow-hidden rounded-2xl border bg-white p-5 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md sm:p-6 ${
+                isSelected
+                  ? 'border-blue-400 ring-2 ring-blue-500/15 shadow-md'
+                  : 'border-slate-200/90 hover:border-slate-300'
               }`}
             >
-              <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 whitespace-normal break-words leading-snug">
-                {card.label}
-              </p>
-              <div className="flex min-w-0 flex-col items-start gap-1.5">
-                <h3 className={`max-w-full text-[clamp(1.55rem,2.2vw,2.25rem)] leading-tight font-bold tracking-tight break-words ${card.color}`}>
-                  {card.value}
-                </h3>
-                <span className={`max-w-full whitespace-normal break-words leading-snug ${card.badgeClass}`}>
-                  {card.badgeText}
+              <div className="flex min-w-0 items-start justify-between gap-4">
+                <div className="min-w-0 flex-1">
+                  <p className="text-[11px] font-bold uppercase tracking-[0.08em] text-slate-500 sm:text-xs">
+                    {card.label}
+                  </p>
+                  <p
+                    className={`mt-4 max-w-full font-bold tracking-tight text-slate-950 tabular-nums ${
+                      isRevenue
+                        ? 'whitespace-nowrap text-[clamp(1.55rem,2.4vw,2.15rem)]'
+                        : 'text-[clamp(2rem,3vw,2.5rem)] leading-none'
+                    }`}
+                  >
+                    {card.value}
+                  </p>
+                  <p className="mt-2 text-xs font-medium leading-5 text-slate-500 sm:text-sm">
+                    {card.description}
+                  </p>
+                </div>
+
+                <span className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ring-1 ${card.iconClass}`}>
+                  <Icon className="h-5 w-5" strokeWidth={2} />
                 </span>
               </div>
+
+              {isSelected && (
+                <span className="absolute inset-x-0 bottom-0 h-1 bg-blue-500" aria-hidden="true" />
+              )}
             </button>
           );
         })}
       </div>
 
-      {/* Databricks Telemetry Banner */}
-      <div className="bg-white rounded-2xl border border-slate-200/80 p-3.5 px-5 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs text-slate-600">
+      <div className="flex flex-col items-start justify-between gap-3 rounded-2xl border border-slate-200/80 bg-white px-5 py-3.5 text-xs text-slate-600 shadow-xs sm:flex-row sm:items-center">
         <div className="flex items-center gap-2.5">
-          <div className="w-2.5 h-2.5 rounded-full bg-green-500 animate-pulse" />
+          <div className="h-2.5 w-2.5 rounded-full bg-blue-500" />
           <div>
-            <span className="font-semibold text-slate-800">{pt?'Databricks conectado:':'Databricks Connected:'}</span>{' '}
-            {pt?'Atualizações logísticas da tabela Delta Lake':'Streaming logistics updates from Delta Lake table'}{' '}
-            <code className="font-mono bg-slate-100 text-slate-800 px-1.5 py-0.5 rounded font-semibold text-[11px] border border-slate-200">
+            <span className="font-semibold text-slate-800">{pt ? 'Fonte operacional atual:' : 'Current operational source:'}</span>{' '}
+            <code className="rounded border border-slate-200 bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-slate-800">
               {stats.databricks_sync_status.table}
             </code>
+            <span className={`ml-2 font-semibold ${stats.databricks_sync_status.table.includes('orders_live') ? 'text-emerald-700' : 'text-amber-700'}`}>
+              {stats.databricks_sync_status.table.includes('orders_live')
+                ? (pt ? 'Databricks: sincronização ativa' : 'Databricks: live sync')
+                : (pt ? 'Databricks: aguardando configuração' : 'Databricks: awaiting setup')}
+            </span>
           </div>
         </div>
         <div className="flex items-center gap-4 self-end sm:self-center">
-          <span className="text-slate-400">
-            {pt?'Última sincronização:':'Last Delta Sync:'} <span className="font-mono text-slate-700 font-medium">{stats.databricks_sync_status.last_sync}</span>
+          <span className="text-slate-500">
+            {pt ? 'Última atualização:' : 'Last refresh:'}{' '}
+            <span className="font-mono font-medium text-slate-700">{stats.databricks_sync_status.last_sync}</span>
           </span>
           <button
             id="btn-view-databricks-schema"
             onClick={onOpenDatabricksModal}
-            className="text-blue-600 hover:text-blue-700 font-semibold inline-flex items-center gap-1 hover:underline text-xs"
+            className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-700 hover:underline"
           >
-            {pt?'Detalhes do schema':'Schema Details'} <ArrowUpRight className="w-3.5 h-3.5" />
+            {pt ? 'Como integrar' : 'How to integrate'} <ArrowUpRight className="h-3.5 w-3.5" />
           </button>
         </div>
       </div>

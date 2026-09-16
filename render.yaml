@@ -19,3 +19,30 @@ services:
         sync: false
       - key: VITE_SUPABASE_PUBLISHABLE_KEY
         sync: false
+      - key: APP_URL
+        value: https://marketops-logistics-dashboard.onrender.com
+      # Configure these in Render > Environment. Never commit credentials.
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_SECURE
+        value: "false"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+      # Optional safe redirect for demo customer addresses such as @example.com.
+      - key: DEMO_ALERT_RECIPIENT
+        sync: false
+      # Future Databricks integration. Leave empty until corporate credentials exist.
+      - key: DATABRICKS_HOST
+        sync: false
+      - key: DATABRICKS_TOKEN
+        sync: false
+      - key: DATABRICKS_HTTP_PATH
+        sync: false
+      - key: DATABRICKS_WEBHOOK_SECRET
+        sync: false

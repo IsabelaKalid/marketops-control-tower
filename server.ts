@@ -5,6 +5,7 @@ import { createServer as createViteServer } from 'vite';
 import { CSV_ORDERS } from './src/data/seededOrders';
 import dotenv from 'dotenv';
 import nodemailer from 'nodemailer';
+import crypto from 'crypto';
 import * as XLSX from 'xlsx';
 import { requireRoles } from './server/auth';
 
@@ -13,9 +14,12 @@ import {
   insertOrdersToPostgres,
   postgresEnabled,
   saveCancellationToPostgres,
+  restoreCancellationInPostgres,
   saveOrderStateToPostgres,
+  saveOrderNotesToPostgres,
   savePurchaseConfirmationToPostgres,
 } from './server/postgresOrders';
+import { databricksSyncEnabled, databricksTableName, loadOrdersFromDatabricks } from './server/databricksSync';
 
 dotenv.config({ path: '.env.local' });
 dotenv.config();
@@ -23,7 +27,9 @@ dotenv.config();
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
 
-app.use(express.json());
+// Batch spreadsheets can legitimately exceed Express' 100 KB default after
+// conversion to JSON. Keep a bounded limit large enough for demo workbooks.
+app.use(express.json({ limit: '5mb' }));
 
 const requireOrderManager = requireRoles(
   'admin',
@@ -38,6 +44,10 @@ const requireReportAccess = requireRoles(
 
 app.use('/api', (request, response, next) => {
   const readOnlyMethods = ['GET', 'HEAD', 'OPTIONS'];
+  const remoteAddress = request.socket.remoteAddress || '';
+  const isLocalRequest = remoteAddress === '127.0.0.1'
+    || remoteAddress === '::1'
+    || remoteAddress === '::ffff:127.0.0.1';
 
   if (readOnlyMethods.includes(request.method)) {
     next();
@@ -45,8 +55,30 @@ app.use('/api', (request, response, next) => {
   }
 
   if (request.path === '/reports/email') {
+    if (isLocalRequest && process.env.NODE_ENV !== 'production') {
+      next();
+      return;
+    }
     requireReportAccess(request, response, next);
     return;
+  }
+
+  // Local-only SMTP diagnostics may be used from read-only demo access. This
+  // exception never applies to a deployed instance.
+  if ((request.path === '/alerts/test' || request.path === '/alerts/send-daily') && isLocalRequest && process.env.NODE_ENV !== 'production') {
+    next();
+    return;
+  }
+
+  if (request.path === '/databricks/reconcile') {
+    const configuredSecret = process.env.DATABRICKS_WEBHOOK_SECRET?.trim();
+    const suppliedSecret = request.header('x-marketops-integration-key')?.trim();
+    if (configuredSecret && suppliedSecret
+      && configuredSecret.length === suppliedSecret.length
+      && crypto.timingSafeEqual(Buffer.from(suppliedSecret), Buffer.from(configuredSecret))) {
+      next();
+      return;
+    }
   }
 
   requireOrderManager(request, response, next);
@@ -57,7 +89,7 @@ interface ShipmentEvent {
   id: string;
   timestamp: string;
   location: string;
-  status: 'Not Shipped' | 'Preparing' | 'In Transit' | 'Out for Delivery' | 'Delivered' | 'Returned' | 'Cancelled';
+  status: 'Not Shipped' | 'Preparing' | 'In Transit' | 'At Distribution Center' | 'Out for Delivery' | 'Delivered' | 'Returned' | 'Cancelled';
   description: string;
 }
 
@@ -67,7 +99,7 @@ interface ShipmentData {
   tracking_number: string;
   estimated_delivery: string;
   actual_delivery_date: string | null;
-  shipment_status: 'Not Shipped' | 'Preparing' | 'In Transit' | 'Out for Delivery' | 'Delivered' | 'Returned' | 'Cancelled';
+  shipment_status: 'Not Shipped' | 'Preparing' | 'In Transit' | 'At Distribution Center' | 'Out for Delivery' | 'Delivered' | 'Returned' | 'Cancelled';
   databricks_sync_time: string;
   destination: string;
   origin_hub: string;
@@ -80,6 +112,7 @@ interface Order {
   customer_name: string;
   customer_email: string;
   customer_phone?: string;
+  customer_cpf?: string;
   sku: string;
   product_name: string;
   asin: string;
@@ -102,6 +135,7 @@ interface Order {
   destination_hub?: string;
   delivery_client_date?: string;
   entry_cd_date?: string;
+  billing_date?: string;
   sequencial?: string;
   sts_compra?: string;
   unit_measure?: string;
@@ -134,8 +168,12 @@ interface DeliveryAlert {
   subject: string;
   message: string;
   timestamp: string;
-  status: 'sent' | 'delivered';
+  status: 'queued' | 'sent' | 'delivered' | 'simulated' | 'failed';
+  intended_email?: string;
+  recipient_phone?: string;
+  delivery_detail?: string;
 }
+
 
 // Synthetic marketplace orders used by the portfolio/demo environment.
 // Order ID in menu principal and API defaults to Ordem de Compra (PO)
@@ -235,15 +273,19 @@ const groupOrders = (source: Order[]): Order[] => {
 
 const confirmationsPath = path.join(process.cwd(), 'data', 'marketplace-purchase-confirmations.json');
 const cancellationReasonsPath = path.join(process.cwd(), 'data', 'order-cancellation-reasons.json');
+const orderNotesPath = path.join(process.cwd(), 'data', 'order-notes.json');
 type PurchaseConfirmation = { confirmed: boolean; confirmed_at: string };
 let savedConfirmations: Record<string, PurchaseConfirmation> = {};
 type SavedCancellation = string | { reason: string; updated_at?: string };
 let savedCancellationReasons: Record<string, SavedCancellation> = {};
+type SavedOrderNote = string | { notes: string; updated_at?: string };
+let savedOrderNotes: Record<string, SavedOrderNote> = {};
 try {
   if (fs.existsSync(confirmationsPath)) savedConfirmations = JSON.parse(fs.readFileSync(confirmationsPath, 'utf8'));
   if (fs.existsSync(cancellationReasonsPath)) savedCancellationReasons = JSON.parse(fs.readFileSync(cancellationReasonsPath, 'utf8'));
+  if (fs.existsSync(orderNotesPath)) savedOrderNotes = JSON.parse(fs.readFileSync(orderNotesPath, 'utf8'));
 } catch (error) {
-  console.error('Could not read purchase confirmations:', error);
+  console.error('Could not read persisted operational data:', error);
 }
 
 let orders: Order[] = deduplicateOrderLines(CSV_ORDERS.map((o, index) => {
@@ -252,7 +294,10 @@ let orders: Order[] = deduplicateOrderLines(CSV_ORDERS.map((o, index) => {
   const cancellationReason = typeof savedCancellation === 'string' ? savedCancellation : savedCancellation?.reason;
   const cancellationUpdatedAt = typeof savedCancellation === 'string' ? undefined : savedCancellation?.updated_at;
   const savedConfirmationAt = savedConfirmations[key]?.confirmed_at;
-  const persistedUpdateDates = [o.updated_at, savedConfirmationAt, cancellationUpdatedAt].filter((value): value is string => Boolean(value));
+  const savedOrderNote = savedOrderNotes[key];
+  const persistedOrderNote = typeof savedOrderNote === 'string' ? savedOrderNote : savedOrderNote?.notes;
+  const noteUpdatedAt = typeof savedOrderNote === 'string' ? undefined : savedOrderNote?.updated_at;
+  const persistedUpdateDates = [o.updated_at, savedConfirmationAt, cancellationUpdatedAt, noteUpdatedAt].filter((value): value is string => Boolean(value));
   return {
     ...o,
     id: `${o.purchase_order || o.id}-${o.sequencial || o.sku || index}`,
@@ -261,15 +306,109 @@ let orders: Order[] = deduplicateOrderLines(CSV_ORDERS.map((o, index) => {
     shipment: cancellationReason ? { ...o.shipment, is_shipped: false, shipment_status: 'Cancelled' } : o.shipment,
     marketplace_purchase_confirmed: savedConfirmations[key]?.confirmed ?? Boolean(o.marketplace_order_date || o.marketplace_order_id),
     marketplace_purchase_confirmed_at: savedConfirmations[key]?.confirmed_at || o.marketplace_order_date || undefined,
+    notes: persistedOrderNote ?? o.notes,
     cancellation_reason: cancellationReason || undefined,
     cancellation_updated_at: cancellationReason ? (cancellationUpdatedAt || o.cancellation_updated_at || new Date().toISOString()) : o.cancellation_updated_at,
     updated_at: persistedUpdateDates.sort().at(-1) || o.updated_at,
   };
 }));
 
+const DEMO_PHONE = '92 99999-9999';
+
+const demoEmailFor = (name: string) => {
+  const slug = (name || 'cliente-demo')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '.')
+    .replace(/^\.|\.$/g, '')
+    .slice(0, 42) || 'cliente-demo';
+  return `${slug}@example.com`;
+};
+
+const applyDemoContactDefaults = (source: Order[]) => {
+  source.forEach((order) => {
+    if (!order.customer_email) order.customer_email = demoEmailFor(order.customer_name);
+    if (!order.customer_phone) order.customer_phone = DEMO_PHONE;
+  });
+  return source;
+};
+
+applyDemoContactDefaults(orders);
+
 let activeDataSource: 'synthetic' | 'postgres' = 'synthetic';
 let databaseConnectionStatus: 'disabled' | 'connected' | 'error' = 'disabled';
 let databaseConnectionMessage = 'Using the bundled synthetic dataset.';
+let lastDatabricksPullAt = 0;
+let lastDatabricksPullIso = '';
+let lastDatabricksPullError = '';
+let databricksPullPromise: Promise<void> | null = null;
+
+const databricksLineKey = (order: Order) => [
+  normalizeKeyPart(order.purchase_order || order.id),
+  normalizeKeyPart(order.sku),
+].join(':::');
+
+const mergeDatabricksItem = (source: Order, existing?: Order): Order => {
+  if (!existing) return source;
+  const hasLocalCancellation = Boolean(existing.cancellation_reason);
+  return {
+    ...existing,
+    ...source,
+    sequencial: existing.sequencial || source.sequencial,
+    notes: existing.notes,
+    marketplace_purchase_confirmed: existing.marketplace_purchase_confirmed,
+    marketplace_purchase_confirmed_at: existing.marketplace_purchase_confirmed_at,
+    cancellation_reason: hasLocalCancellation ? existing.cancellation_reason : source.cancellation_reason,
+    cancellation_updated_at: hasLocalCancellation ? existing.cancellation_updated_at : source.cancellation_updated_at,
+    status: hasLocalCancellation ? 'Cancelled' : source.status,
+    status_text: hasLocalCancellation ? existing.status_text : source.status_text,
+    shipment: {
+      ...existing.shipment,
+      ...source.shipment,
+      shipment_status: hasLocalCancellation ? 'Cancelled' : source.shipment.shipment_status,
+      actual_delivery_date: hasLocalCancellation ? null : source.shipment.actual_delivery_date,
+      events: source.shipment.events.length ? source.shipment.events : existing.shipment.events,
+    },
+  };
+};
+
+const refreshDatabricksIfDue = async (force = false) => {
+  if (!databricksSyncEnabled()) return;
+  const intervalMs = Math.max(5000, Number(process.env.DATABRICKS_POLL_INTERVAL_MS || 15000));
+  if (!force && Date.now() - lastDatabricksPullAt < intervalMs) return;
+  if (databricksPullPromise) return databricksPullPromise;
+
+  databricksPullPromise = (async () => {
+    try {
+      const sourceItems = await loadOrdersFromDatabricks();
+      const currentByKey = new Map(orders.map(item => [databricksLineKey(item), item] as const));
+      const mergedSourceItems = sourceItems.map(item => mergeDatabricksItem(item, currentByKey.get(databricksLineKey(item))));
+
+      if (activeDataSource === 'postgres') {
+        await insertOrdersToPostgres(mergedSourceItems);
+        orders = applyDemoContactDefaults(deduplicateOrderLines(await loadOrdersFromPostgres()));
+      } else {
+        const sourceKeys = new Set(mergedSourceItems.map(databricksLineKey));
+        const localOnly = orders.filter(item => !sourceKeys.has(databricksLineKey(item)));
+        orders = applyDemoContactDefaults(deduplicateOrderLines([...mergedSourceItems, ...localOnly]));
+      }
+
+      lastDatabricksPullAt = Date.now();
+      lastDatabricksPullIso = new Date().toISOString();
+      lastDatabricksPullError = '';
+      console.log(`Databricks synchronized: ${sourceItems.length} product lines from ${databricksTableName()}.`);
+    } catch (error: any) {
+      lastDatabricksPullAt = Date.now();
+      lastDatabricksPullError = error?.message || String(error);
+      console.error(`Databricks synchronization failed: ${lastDatabricksPullError}`);
+    } finally {
+      databricksPullPromise = null;
+    }
+  })();
+
+  return databricksPullPromise;
+};
 
 const isCancellationStatus = (...values: unknown[]) => values.some(value =>
   typeof value === 'string' && value.toUpperCase().includes('CANCEL')
@@ -282,13 +421,25 @@ const reconcileLifecycle = (order: Order, source: Record<string, unknown> = {}) 
     return found === undefined ? undefined : String(found).trim();
   };
 
+  order.customer_email = asText('customer_email', 'email_cliente') ?? order.customer_email;
+  order.customer_phone = asText('customer_phone', 'telefone_cliente') ?? order.customer_phone ?? DEMO_PHONE;
+  order.customer_cpf = asText('customer_cpf', 'cpf_cliente', 'cpf') ?? order.customer_cpf;
   order.invoice = asText('invoice') ?? order.invoice;
   order.wr_date = asText('wr_date') ?? order.wr_date;
   order.eta = asText('eta') ?? order.eta;
   order.etd = asText('etd') ?? order.etd;
   order.di_date = asText('di_date', 'data_di') ?? order.di_date;
   order.entry_cd_date = asText('entry_cd_date', 'entrada_cd') ?? order.entry_cd_date;
+  order.billing_date = asText('billing_date', 'data_faturamento', 'faturamento') ?? order.billing_date;
   order.delivery_client_date = asText('delivery_client_date', 'entrega_cliente') ?? order.delivery_client_date;
+  order.shipment.carrier = asText('carrier', 'transportadora') ?? order.shipment.carrier;
+  order.shipment.tracking_number = asText('tracking_number', 'rastreio') ?? order.shipment.tracking_number;
+  order.shipment.estimated_delivery = asText('estimated_delivery', 'previsao_entrega') ?? order.shipment.estimated_delivery;
+  order.shipment.destination = asText('destination', 'destino') ?? order.shipment.destination;
+  order.shipment.origin_hub = asText('origin_hub', 'origem_logistica') ?? order.shipment.origin_hub;
+
+  const explicitStatus = (asText('shipment_status', 'delivery_status', 'status_entrega') || '').toUpperCase();
+  const isOutForDelivery = explicitStatus.includes('OUT FOR DELIVERY') || explicitStatus.includes('SAIU PARA ENTREGA') || explicitStatus.includes('ROTA DE ENTREGA');
 
   const cancelled = isCancellationStatus(
     source.status,
@@ -314,8 +465,21 @@ const reconcileLifecycle = (order: Order, source: Record<string, unknown> = {}) 
     order.shipment.is_shipped = true;
     order.shipment.shipment_status = 'Delivered';
     order.shipment.actual_delivery_date = order.delivery_client_date;
-  } else if (order.invoice || order.wr_date || order.etd || order.eta || order.di_date || order.entry_cd_date) {
+  } else if (order.billing_date || isOutForDelivery) {
     order.status = 'Shipped';
+    order.sts_compra = 'COMPRADO';
+    order.shipment.is_shipped = true;
+    order.shipment.shipment_status = 'Out for Delivery';
+    order.shipment.actual_delivery_date = null;
+  } else if (order.entry_cd_date) {
+    order.status = 'Shipped';
+    order.sts_compra = 'COMPRADO';
+    order.shipment.is_shipped = true;
+    order.shipment.shipment_status = 'At Distribution Center';
+    order.shipment.actual_delivery_date = null;
+  } else if (order.invoice || order.wr_date || order.etd || order.eta || order.di_date || explicitStatus.includes('TRANSIT')) {
+    order.status = 'Shipped';
+    order.sts_compra = 'COMPRADO';
     order.shipment.is_shipped = true;
     order.shipment.shipment_status = 'In Transit';
     order.shipment.actual_delivery_date = null;
@@ -352,40 +516,260 @@ const saveCancellationReasons = () => {
   fs.writeFileSync(cancellationReasonsPath, JSON.stringify(payload, null, 2), 'utf8');
 };
 
+const saveOrderNotes = () => {
+  const payload: Record<string, { notes: string; updated_at?: string }> = {};
+  for (const order of orders) {
+    if (order.notes !== undefined) {
+      payload[orderGroupKey(order)] = { notes: order.notes || '', updated_at: order.updated_at };
+    }
+  }
+  fs.mkdirSync(path.dirname(orderNotesPath), { recursive: true });
+  fs.writeFileSync(orderNotesPath, JSON.stringify(payload, null, 2), 'utf8');
+};
+
 const findOrderByIdOrPo = (identifier: string) => {
   return orders.find(
     o => o.id === identifier || o.purchase_order === identifier || o.customer_order_id === identifier
   );
 };
 
-let alerts: DeliveryAlert[] = [];
+const escapeHtml = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char] || char));
 
-// Helper to record an automated delivery notification alert
+let alerts: DeliveryAlert[] = [];
+const dailyAlertDispatchKeys = new Set<string>();
+
+const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const smtpSettings = () => {
+  const host = process.env.SMTP_HOST?.trim();
+  const port = Number(process.env.SMTP_PORT || 587);
+  const user = process.env.SMTP_USER?.trim();
+  const password = (process.env.SMTP_PASSWORD || '').replace(/\s+/g, '');
+  const from = process.env.SMTP_FROM?.trim() || user;
+  return {
+    host,
+    port,
+    user,
+    password,
+    from,
+    secure: String(process.env.SMTP_SECURE).toLowerCase() === 'true',
+    connectionTimeout: Number(process.env.SMTP_CONNECTION_TIMEOUT_MS || 10_000),
+    configured: Boolean(host && user && password && from),
+  };
+};
+
+const createSmtpTransport = (smtp: ReturnType<typeof smtpSettings>) => nodemailer.createTransport({
+  host: smtp.host,
+  port: smtp.port,
+  secure: smtp.secure,
+  auth: { user: smtp.user, pass: smtp.password },
+  connectionTimeout: smtp.connectionTimeout,
+  greetingTimeout: smtp.connectionTimeout,
+  socketTimeout: smtp.connectionTimeout,
+});
+
+const statusLabelPt = (status: ShipmentData['shipment_status']) => ({
+  'Not Shipped': 'Pedido recebido',
+  Preparing: 'Preparando envio',
+  'In Transit': 'Em trânsito',
+  'Out for Delivery': 'Saiu para entrega',
+  Delivered: 'Entregue',
+  Returned: 'Devolvido',
+  Cancelled: 'Cancelado',
+}[status] || status);
+
+const eventTypeForShipmentStatus = (status: ShipmentData['shipment_status']): DeliveryAlert['event_type'] => {
+  if (status === 'Not Shipped' || status === 'Preparing') return 'Order Placed';
+  if (status === 'In Transit') return 'Shipment Dispatched';
+  if (status === 'Out for Delivery') return 'Out for Delivery';
+  if (status === 'Delivered') return 'Delivered';
+  if (status === 'Cancelled') return 'Cancelled';
+  return 'In Transit';
+};
+
+const eventTypeLabelPt = (eventType: DeliveryAlert['event_type']) => ({
+  'Order Placed': 'Pedido recebido',
+  'Shipment Dispatched': 'Pedido despachado',
+  'In Transit': 'Em trânsito',
+  'Out for Delivery': 'Saiu para entrega',
+  'Delivered': 'Entregue',
+  'Delivery Exception': 'Ocorrência na entrega',
+  'Cancelled': 'Cancelado',
+}[eventType] || eventType);
+
+const customerStage = (order: Order) => {
+  if (order.status === 'Cancelled' || order.shipment.shipment_status === 'Cancelled') {
+    return { index: -1, title: 'Pedido cancelado', date: order.cancellation_updated_at, message: `O pedido ${order.purchase_order || order.id} foi cancelado. Motivo: ${order.cancellation_reason || 'motivo ainda não informado'}.` };
+  }
+  const stages = [
+    { title: 'Pedido registrado', date: order.date_order, message: `O pedido ${order.purchase_order || order.id} foi registrado em nosso sistema.` },
+    { title: 'Preparando envio', date: order.marketplace_purchase_confirmed_at, message: `A compra do pedido ${order.purchase_order || order.id} foi confirmada e está sendo preparada.` },
+    { title: 'Pedido enviado', date: order.etd, message: `O pedido ${order.purchase_order || order.id} saiu da warehouse com destino a Manaus.${order.shipment.tracking_number ? ` Rastreio: ${order.shipment.tracking_number}.` : ''}` },
+    { title: 'Chegou em Manaus', date: order.eta, message: `O pedido ${order.purchase_order || order.id} chegou a Manaus e seguirá para o centro de distribuição.` },
+    { title: 'Chegou ao centro de distribuição', date: order.entry_cd_date, message: `O pedido ${order.purchase_order || order.id} chegou ao centro de distribuição da empresa.` },
+    { title: 'Saiu para entrega', date: order.billing_date, message: `O pedido ${order.purchase_order || order.id} foi faturado e saiu para entrega ao cliente.` },
+    { title: 'Pedido entregue', date: order.delivery_client_date, message: `O pedido ${order.purchase_order || order.id} foi entregue ao cliente.` },
+  ];
+  let index = 0;
+  stages.forEach((stage, position) => { if (stage.date) index = position; });
+  return { index, ...stages[index] };
+};
+
+const customerMessageForEvent = (order: Order, eventType: DeliveryAlert['event_type']) => {
+  const stage = customerStage(order);
+  if (stage.message) return stage.message;
+  const po = order.purchase_order || order.id;
+  const eta = order.shipment.estimated_delivery;
+  const tracking = order.shipment.tracking_number;
+  switch (eventType) {
+    case 'Order Placed':
+      return `Recebemos o pedido ${po}. Avisaremos automaticamente quando houver uma nova etapa logística.`;
+    case 'Shipment Dispatched':
+      return `Boa notícia: o pedido ${po} foi despachado e já está em trânsito.${tracking ? ` O código de rastreio é ${tracking}.` : ''}`;
+    case 'In Transit':
+      return order.entry_cd_date
+        ? `O pedido ${po} chegou ao centro de distribuição em Manaus e seguirá para a etapa de entrega.${eta ? ` A previsão de entrega é ${eta}.` : ''}`
+        : `O pedido ${po} continua em trânsito.${eta ? ` A previsão de entrega é ${eta}.` : ''}`;
+    case 'Out for Delivery':
+      return `Seu pedido ${po} saiu para entrega e está a caminho do destino final. Fique atento ao recebimento.`;
+    case 'Delivered':
+      return `O pedido ${po} foi marcado como entregue. Esperamos que tenha chegado tudo certo.`;
+    case 'Delivery Exception':
+      return `Identificamos uma ocorrência na entrega do pedido ${po}. Nossa equipe está acompanhando a atualização logística.`;
+    case 'Cancelled':
+      return `O pedido ${po} foi cancelado. Consulte o acompanhamento do pedido para mais detalhes.`;
+    default:
+      return `O pedido ${po} recebeu uma nova atualização logística.`;
+  }
+};
+
+const buildDeliveryAlertHtml = (order: Order, title: string, message: string, eventType: DeliveryAlert['event_type']) => {
+  const po = order.purchase_order || order.id;
+  const stage = customerStage(order);
+  const status = stage.title;
+  const tracking = order.shipment.tracking_number || 'Será informado assim que disponível';
+  const carrier = order.shipment.carrier || 'A definir';
+  const eta = order.shipment.estimated_delivery || 'Em atualização';
+  const steps = [
+    { label: 'Pedido registrado', date: order.date_order },
+    { label: 'Preparando envio', date: order.marketplace_purchase_confirmed_at },
+    { label: 'Pedido enviado', date: order.etd },
+    { label: 'Chegou em Manaus', date: order.eta },
+    { label: 'Chegou ao CD', date: order.entry_cd_date },
+    { label: 'Saiu para entrega', date: order.billing_date },
+    { label: 'Entregue', date: order.delivery_client_date },
+  ];
+  const activeStep = stage.index;
+  const progress = eventType === 'Cancelled'
+    ? `<div style="margin:20px 0;padding:16px;border-radius:12px;background:#fff1f2;border:1px solid #fecdd3;color:#9f1239"><strong>Pedido cancelado</strong><div style="margin-top:6px;font-size:12px">Motivo: ${escapeHtml(order.cancellation_reason || 'Motivo ainda não informado')}</div></div>`
+    : `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:20px 0;table-layout:fixed"><tr>${steps.map((step, index) => {
+        const complete = index <= activeStep;
+        return `<td align="center" valign="top" style="position:relative"><div style="height:4px;background:${complete ? '#2563eb' : '#dbe4ef'};margin:10px 0 -12px"></div><div style="position:relative;margin:auto;width:20px;height:20px;line-height:20px;border-radius:50%;background:${complete ? '#2563eb' : '#dbe4ef'};color:white;font-size:10px;font-weight:700">${complete ? '✓' : index + 1}</div><div style="margin-top:8px;font-size:9px;line-height:1.25;color:${complete ? '#1e3a8a' : '#64748b'};font-weight:${index === activeStep ? '700' : '400'}">${step.label}</div><div style="margin-top:3px;font-size:8px;color:#64748b">${step.date ? escapeHtml(step.date.slice(0, 10).split('-').reverse().join('/')) : '—'}</div></td>`;
+      }).join('')}</tr></table>`;
+  return `<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:Arial,sans-serif;color:#172033">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5f9;padding:28px 12px"><tr><td align="center">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:620px;background:#ffffff;border:1px solid #dbe4ef;border-radius:16px;overflow:hidden">
+        <tr><td style="background:#17324d;color:#ffffff;padding:22px 26px"><div style="font-size:12px;opacity:.8">MarketOps • Atualização automática de entrega</div><h2 style="margin:6px 0 0;font-size:20px">${escapeHtml(stage.title || title)}</h2></td></tr>
+        <tr><td style="padding:26px">
+          <p style="margin:0 0 14px;font-size:14px">Olá, <strong>${escapeHtml(order.customer_name)}</strong>.</p>
+          <p style="margin:0 0 18px;font-size:14px;line-height:1.6">${escapeHtml(message)}</p>
+          ${progress}
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:separate;border-spacing:0 8px;font-size:13px">
+            <tr><td style="color:#64748b;width:42%">Pedido</td><td style="font-weight:700">${escapeHtml(po)}</td></tr>
+            <tr><td style="color:#64748b">CPF</td><td>${escapeHtml(order.customer_cpf || 'Não informado')} ${order.customer_cpf ? '<span style="color:#94a3b8;font-size:10px">(dado fictício de demonstração)</span>' : ''}</td></tr>
+            <tr><td style="color:#64748b">Status</td><td style="font-weight:700;color:#1d4ed8">${escapeHtml(status)}</td></tr>
+            <tr><td style="color:#64748b">Rastreio</td><td style="font-weight:700">${escapeHtml(tracking)}</td></tr>
+            <tr><td style="color:#64748b">Transportadora</td><td>${escapeHtml(carrier)}</td></tr>
+            <tr><td style="color:#64748b">Previsão de entrega</td><td>${escapeHtml(eta)}</td></tr>
+          </table>
+        </td></tr>
+      </table>
+    </td></tr></table>
+  </body></html>`;
+};
+
 function recordDeliveryAlert(
   order: Order,
   eventType: DeliveryAlert['event_type'],
   customSubject?: string,
-  customMsg?: string
+  customMsg?: string,
+  recipientOverride?: string,
 ): DeliveryAlert {
-  const alertId = `ALT-${Date.now().toString().slice(-4)}${Math.floor(Math.random() * 100)}`;
-  const subject = customSubject || `Status Alert: Order ${order.id} is now ${eventType}`;
-  const message = customMsg || `Shipment update for ${order.product_name}. Tracking: ${order.shipment.tracking_number} via ${order.shipment.carrier}. Current status: ${order.shipment.shipment_status}. Estimated delivery: ${order.shipment.estimated_delivery}`;
+  const alertId = `ALT-${Date.now().toString().slice(-6)}${Math.floor(Math.random() * 100)}`;
+  const subject = customSubject || `[MarketOps] ${customerStage(order).title} • Pedido ${order.purchase_order || order.id}`;
+  const message = customMsg || customerMessageForEvent(order, eventType);
+  const intendedEmail = order.customer_email?.trim() || '';
+  const selectedRecipient = recipientOverride?.trim() || intendedEmail;
 
   const alert: DeliveryAlert = {
     id: alertId,
-    order_id: order.id,
+    order_id: order.purchase_order || order.id,
     customer_name: order.customer_name,
-    recipient_email: order.customer_email,
-    type: 'both',
+    recipient_email: selectedRecipient,
+    intended_email: intendedEmail,
+    recipient_phone: order.customer_phone || DEMO_PHONE,
+    type: 'email',
     event_type: eventType,
     subject,
     message,
     timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19),
-    status: 'sent'
+    status: 'queued',
   };
 
   alerts.unshift(alert);
+  alerts = alerts.slice(0, 100);
   return alert;
+}
+
+async function dispatchDeliveryAlert(
+  order: Order,
+  eventType: DeliveryAlert['event_type'],
+  customSubject?: string,
+  customMsg?: string,
+  recipientOverride?: string,
+): Promise<DeliveryAlert> {
+  const alert = recordDeliveryAlert(order, eventType, customSubject, customMsg, recipientOverride);
+  const intended = alert.intended_email || '';
+  const demoRedirect = process.env.DEMO_ALERT_RECIPIENT?.trim();
+  const isReservedDemoAddress = /@example\.(com|org|net)$/i.test(intended);
+  const recipient = recipientOverride?.trim() || (isReservedDemoAddress && demoRedirect ? demoRedirect : intended);
+  const smtp = smtpSettings();
+
+  if (!recipient || !emailPattern.test(recipient)) {
+    alert.status = 'simulated';
+    alert.delivery_detail = 'E-mail do cliente não disponível. O evento foi registrado no histórico.';
+    return alert;
+  }
+
+  if (isReservedDemoAddress && !recipientOverride && !demoRedirect) {
+    alert.status = 'simulated';
+    alert.delivery_detail = 'Contato sintético: configure DEMO_ALERT_RECIPIENT para receber os alertas reais da demonstração.';
+    return alert;
+  }
+
+  if (!smtp.configured) {
+    alert.status = 'simulated';
+    alert.delivery_detail = 'SMTP não configurado neste ambiente. O alerta foi registrado, mas não enviado externamente.';
+    return alert;
+  }
+
+  try {
+    const transporter = createSmtpTransport(smtp);
+    const info = await transporter.sendMail({
+      from: smtp.from,
+      to: recipient,
+      subject: alert.subject,
+      text: alert.message,
+      html: buildDeliveryAlertHtml(order, eventTypeLabelPt(eventType), alert.message, eventType),
+    });
+    alert.recipient_email = recipient;
+    alert.status = 'sent';
+    alert.delivery_detail = `SMTP aceitou a mensagem (${info.messageId}).`;
+    return alert;
+  } catch (error: any) {
+    alert.status = 'failed';
+    alert.delivery_detail = error?.message || 'Falha desconhecida ao enviar via SMTP.';
+    return alert;
+  }
 }
 
 // ----------------------------------------------------
@@ -404,12 +788,40 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+app.get('/api/email/status', (_req, res) => {
+  const smtp = smtpSettings();
+  const senderAddress = smtp.from?.match(/<([^>]+)>/)?.[1] || smtp.from || smtp.user || '';
+  res.json({
+    configured: smtp.configured,
+    demo_redirect_configured: Boolean(process.env.DEMO_ALERT_RECIPIENT?.trim()),
+    mode: smtp.configured ? 'smtp' : 'log-only',
+    allowed_senders: process.env.NODE_ENV !== 'production'
+      ? [...new Set([smtp.user, senderAddress, ...(process.env.SMTP_ALLOWED_FROM_ADDRESSES || '').split(/[;,]/)].map(value => value?.trim()).filter(Boolean))]
+      : [],
+  });
+});
+
+app.post('/api/email/verify', async (_req, res) => {
+  const smtp = smtpSettings();
+  if (!smtp.configured) return res.status(503).json({ verified: false, error: 'SMTP não configurado.' });
+  try {
+    await createSmtpTransport(smtp).verify();
+    res.json({ verified: true, message: 'Conexão e autenticação SMTP verificadas.' });
+  } catch (error: any) {
+    res.status(502).json({ verified: false, error: error?.message || 'Falha na verificação SMTP.' });
+  }
+});
+
 // 2. Dashboard Analytics & Summary Statistics
-app.get('/api/dashboard/stats', (req, res) => {
+app.get('/api/dashboard/stats', async (req, res) => {
+  await refreshDatabricksIfDue();
   const grouped = groupOrders(orders);
   const total = grouped.length;
   const pending = grouped.filter(o => o.status === 'Pending' || o.status === 'Processing').length;
-  const shipped = grouped.filter(o => o.status === 'Shipped').length;
+  const shipped = grouped.filter(order => {
+    const items = order.items?.length ? order.items : [order];
+    return order.status !== 'Delivered' && order.status !== 'Cancelled' && items.some(item => Boolean(item.invoice?.trim()));
+  }).length;
   const delivered = grouped.filter(o => o.status === 'Delivered').length;
   const cancelled = grouped.filter(o => o.status === 'Cancelled').length;
   const total_revenue = orders.reduce((acc, curr) => acc + (curr.status !== 'Cancelled' ? curr.total_price : 0), 0);
@@ -424,10 +836,10 @@ app.get('/api/dashboard/stats', (req, res) => {
     delivered_orders: delivered,
     cancelled_orders: cancelled,
     databricks_sync_status: {
-      last_sync: new Date().toISOString().replace('T', ' ').substring(0, 19) + ' UTC',
-      table: activeDataSource === 'postgres' ? 'public.orders + public.order_items + public.logistics' : 'synthetic demo dataset',
+      last_sync: (lastDatabricksPullIso || new Date().toISOString()).replace('T', ' ').substring(0, 19) + ' UTC',
+      table: databricksSyncEnabled() ? databricksTableName().replace(/`/g, '') : (activeDataSource === 'postgres' ? 'public.orders + public.order_items + public.logistics' : 'synthetic demo dataset'),
       total_records: total,
-      status: databaseConnectionStatus === 'error' ? 'connected' : 'healthy'
+      status: lastDatabricksPullError ? 'connected' : 'healthy'
     }
   });
 });
@@ -441,7 +853,8 @@ app.get('/api/sellers', (_req, res) => {
 });
 
 // 3. Get all orders with multi-parameter filter & search
-app.get('/api/orders', (req, res) => {
+app.get('/api/orders', async (req, res) => {
+  await refreshDatabricksIfDue();
   const { search, status, date_from, date_to, marketplace, operational, sort_by, sort_direction } = req.query;
 
   let filtered = [...orders];
@@ -459,10 +872,6 @@ app.get('/api/orders', (req, res) => {
       (o.invoice && o.invoice.toLowerCase().includes(q)) ||
       o.shipment.tracking_number.toLowerCase().includes(q)
     );
-  }
-
-  if (status && typeof status === 'string' && status !== 'All') {
-    filtered = filtered.filter(o => o.status.toLowerCase() === status.toLowerCase());
   }
 
   if (marketplace && typeof marketplace === 'string' && marketplace !== 'All') {
@@ -486,8 +895,20 @@ app.get('/api/orders', (req, res) => {
     filtered = filtered.filter(o => o.date_order <= date_to);
   }
 
-  // Expose one visual order with all its product lines, then apply the selected ordering.
+  // Expose one visual order with all its product lines before applying status semantics.
+  // "In Transit" is intentionally invoice-driven: an order enters this filter only
+  // after at least one active product line has an Invoice and before customer delivery.
   let grouped = groupOrders(filtered);
+  if (status && typeof status === 'string' && status !== 'All') {
+    const normalizedStatus = status.toLowerCase();
+    grouped = grouped.filter(order => {
+      if (normalizedStatus === 'shipped') {
+        const items = order.items?.length ? order.items : [order];
+        return order.status !== 'Delivered' && order.status !== 'Cancelled' && items.some(item => Boolean(item.invoice?.trim()));
+      }
+      return order.status.toLowerCase() === normalizedStatus;
+    });
+  }
   const selectedSort: 'date_order' | 'updated_at' = sort_by === 'date_order' ? 'date_order' : 'updated_at';
   const direction = sort_direction === 'asc' ? 1 : -1;
   grouped.sort((a, b) => {
@@ -504,7 +925,13 @@ app.get('/api/orders', (req, res) => {
       const items = order.items?.length ? order.items : [order];
       const isOpen = order.status !== 'Delivered' && order.status !== 'Cancelled';
       const any = (predicate: (item: Order) => boolean) => items.some(predicate);
-      if (operational === 'in_transit_invoiced') return order.status === 'Shipped' && any(item => Boolean(item.invoice));
+      if (operational === 'at_distribution_center') {
+        const activeItems = items.filter(item => item.status !== 'Cancelled');
+        const hasEntryCd = activeItems.some(item => Boolean(item.entry_cd_date));
+        const hasBilling = activeItems.some(item => Boolean(item.billing_date));
+        const hasDelivery = activeItems.some(item => Boolean(item.delivery_client_date));
+        return activeItems.length > 0 && hasEntryCd && !hasBilling && !hasDelivery;
+      }
       if (operational === 'not_purchased') return order.status !== 'Cancelled' && !order.marketplace_purchase_confirmed;
       if (operational === 'missing_wr') {
         const elapsed = calendarDaysSince(order.marketplace_purchase_confirmed_at);
@@ -526,12 +953,14 @@ app.get('/api/orders', (req, res) => {
 
 // Receives future Delta/Databricks changes and reconciles lifecycle status from source-of-truth fields.
 // Expected body: { records: [{ purchase_order, sku?, status_compra?, invoice?, di_date?, entrada_cd?, entrega_cliente? }] }
-app.post('/api/databricks/reconcile', (req, res) => {
+app.post('/api/databricks/reconcile', async (req, res) => {
   const records = Array.isArray(req.body?.records) ? req.body.records : [];
   if (!records.length) return res.status(400).json({ error: 'Envie ao menos um registro em records.' });
 
   const updatedGroups = new Set<string>();
+  const previousShipmentStatus = new Map<string, ShipmentData['shipment_status']>();
   const notFound: unknown[] = [];
+
   for (const record of records) {
     const po = normalizeKeyPart(record.purchase_order || record.ordem_compra || record.id);
     const customerOrder = normalizeKeyPart(record.customer_order_id || record.ordem_cliente);
@@ -546,15 +975,43 @@ app.post('/api/databricks/reconcile', (req, res) => {
       notFound.push({ purchase_order: po, customer_order_id: customerOrder, sku });
       continue;
     }
+
     matches.forEach(order => {
+      const key = orderGroupKey(order);
+      if (!previousShipmentStatus.has(key)) {
+        const currentGroup = groupOrders(orders.filter(candidate => orderGroupKey(candidate) === key))[0];
+        previousShipmentStatus.set(key, currentGroup?.shipment.shipment_status || order.shipment.shipment_status);
+      }
       reconcileLifecycle(order, record);
-      updatedGroups.add(orderGroupKey(order));
+      updatedGroups.add(key);
     });
   }
 
-  saveCancellationReasons();
   const grouped = groupOrders(orders).filter(order => updatedGroups.has(orderGroupKey(order)));
-  res.json({ updated: grouped.length, orders: grouped, not_found: notFound });
+  if (activeDataSource === 'postgres') {
+    try {
+      for (const groupedOrder of grouped) {
+        await saveOrderStateToPostgres(groupedOrder.items?.length ? groupedOrder.items : [groupedOrder]);
+      }
+    } catch (error: any) {
+      return res.status(500).json({ error: `Não foi possível persistir a reconciliação: ${error?.message || error}` });
+    }
+  }
+
+  saveCancellationReasons();
+  const triggeredAlerts: DeliveryAlert[] = [];
+  for (const groupedOrder of grouped) {
+    const previous = previousShipmentStatus.get(orderGroupKey(groupedOrder));
+    const current = groupedOrder.shipment.shipment_status;
+    if (previous && previous !== current) {
+      triggeredAlerts.push(await dispatchDeliveryAlert(
+        groupedOrder,
+        eventTypeForShipmentStatus(current),
+      ));
+    }
+  }
+
+  res.json({ updated: grouped.length, orders: grouped, not_found: notFound, alerts_triggered: triggeredAlerts });
 });
 
 // 4. Get order by ID or PO
@@ -591,6 +1048,39 @@ app.patch('/api/orders/:id/purchase-confirmation', async (req, res) => {
     item.updated_at = updatedAt;
   });
   savePurchaseConfirmations();
+  res.json({ success: true, order: groupOrders(relatedItems)[0] });
+});
+
+app.patch('/api/orders/:id/notes', async (req, res) => {
+  const order = findOrderByIdOrPo(req.params.id);
+  if (!order) return res.status(404).json({ error: `Order ${req.params.id} not found` });
+
+  const notes = String(req.body?.notes ?? '').trim();
+  if (notes.length > 1500) {
+    return res.status(400).json({ error: 'A observação deve ter no máximo 1500 caracteres.' });
+  }
+
+  const relatedItems = orders.filter(candidate => orderGroupKey(candidate) === orderGroupKey(order));
+  const updatedAt = new Date().toISOString();
+
+  if (activeDataSource === 'postgres') {
+    try {
+      await saveOrderNotesToPostgres(
+        order.purchase_order || order.id,
+        notes,
+        order.account_user,
+      );
+    } catch (error: any) {
+      return res.status(500).json({ error: `Could not save the order note in PostgreSQL: ${error?.message || error}` });
+    }
+  }
+
+  relatedItems.forEach(item => {
+    item.notes = notes || undefined;
+    item.updated_at = updatedAt;
+  });
+  saveOrderNotes();
+
   res.json({ success: true, order: groupOrders(relatedItems)[0] });
 });
 
@@ -639,7 +1129,14 @@ app.patch('/api/orders/:id/cancel', async (req, res) => {
 
   savePurchaseConfirmations();
   saveCancellationReasons();
-  res.json({ success: true, order: groupOrders(relatedItems)[0] });
+  const groupedOrder = groupOrders(relatedItems)[0];
+  await dispatchDeliveryAlert(
+    groupedOrder,
+    'Cancelled',
+    `[MarketOps] Pedido ${groupedOrder.purchase_order || groupedOrder.id} cancelado`,
+    `O pedido ${groupedOrder.purchase_order || groupedOrder.id} foi cancelado. Motivo: ${reason}`,
+  );
+  res.json({ success: true, order: groupedOrder });
 });
 
 app.patch('/api/orders/:id/cancellation-reason', async (req, res) => {
@@ -662,6 +1159,50 @@ app.patch('/api/orders/:id/cancellation-reason', async (req, res) => {
   res.json({ success: true, order: groupOrders(relatedItems)[0] });
 });
 
+app.patch('/api/orders/:id/restore-cancellation', async (req, res) => {
+  const order = findOrderByIdOrPo(req.params.id);
+  if (!order) return res.status(404).json({ error: `Order ${req.params.id} not found` });
+  if (order.status !== 'Cancelled') return res.status(400).json({ error: 'Este pedido não está cancelado.' });
+
+  const relatedItems = orders.filter(candidate => orderGroupKey(candidate) === orderGroupKey(order));
+  const previousItems = relatedItems.map(item => structuredClone(item));
+  const restoredAt = new Date().toISOString();
+
+  relatedItems.forEach((item, index) => {
+    item.status = 'Pending';
+    item.sts_compra = 'COMPRADO';
+    item.status_text = '';
+    item.cancellation_reason = undefined;
+    item.cancellation_updated_at = undefined;
+    reconcileLifecycle(item);
+    item.updated_at = restoredAt;
+    item.shipment.events.unshift({
+      id: `ev-restore-${Date.now()}-${index}`,
+      timestamp: restoredAt.replace('T', ' ').substring(0, 19),
+      location: 'Admin Portal',
+      status: item.shipment.shipment_status,
+      description: 'Cancelamento desfeito. O status foi recalculado a partir dos dados logísticos disponíveis.',
+    });
+  });
+
+  if (activeDataSource === 'postgres') {
+    try {
+      await restoreCancellationInPostgres(relatedItems, order.account_user);
+    } catch (error: any) {
+      relatedItems.forEach((item, index) => Object.assign(item, previousItems[index]));
+      return res.status(500).json({ error: `Não foi possível desfazer o cancelamento no PostgreSQL: ${error?.message || error}` });
+    }
+  }
+
+  saveCancellationReasons();
+  const groupedOrder = groupOrders(relatedItems)[0];
+  res.json({
+    success: true,
+    message: 'Cancelamento desfeito. Se necessário, confirme novamente a compra no marketplace.',
+    order: groupedOrder,
+  });
+});
+
 // 5. Insert New Order
 app.post('/api/orders', async (req, res) => {
   try {
@@ -670,6 +1211,7 @@ app.post('/api/orders', async (req, res) => {
       customer_name,
       customer_email,
       customer_phone,
+      customer_cpf,
       sku,
       product_name,
       asin,
@@ -736,8 +1278,9 @@ app.post('/api/orders', async (req, res) => {
       id: orderId,
       date_order: today,
       customer_name: customer_name.trim(),
-      customer_email: customer_email?.trim() || '',
-      customer_phone: customer_phone || undefined,
+      customer_email: customer_email?.trim() || demoEmailFor(customer_name.trim()),
+      customer_phone: customer_phone?.trim() || DEMO_PHONE,
+      customer_cpf: customer_cpf?.trim() || '000.000.000-00',
       sku: sku.trim().toUpperCase(),
       product_name: product_name.trim(),
       asin: asin.trim().toUpperCase(),
@@ -785,13 +1328,8 @@ app.post('/api/orders', async (req, res) => {
     }
     orders.unshift(newOrder);
 
-    // Trigger automated order placed alert
-    recordDeliveryAlert(
-      newOrder,
-      'Order Placed',
-      `Order Confirmed: ${newOrder.id} (${newOrder.product_name})`,
-      `Thank you ${newOrder.customer_name}. Your marketplace order ${newOrder.id} has been received. Tracking will be added after the seller dispatches the order. Estimated delivery: ${newOrder.shipment.estimated_delivery}.`
-    );
+    // Trigger the same customer communication flow used by logistics status changes.
+    await dispatchDeliveryAlert(newOrder, 'Order Placed');
 
     res.status(201).json({
       success: true,
@@ -807,13 +1345,17 @@ app.post('/api/orders', async (req, res) => {
 // 5b. Batch Orders Ingestion endpoint: send multiple orders at once
 app.post('/api/orders/batch', async (req, res) => {
   try {
-    const { orders: batchItems, default_status } = req.body;
+    const { orders: batchItems, default_status, sync_databricks = true } = req.body;
 
     if (!batchItems || !Array.isArray(batchItems) || batchItems.length === 0) {
       return res.status(400).json({ error: 'No orders provided in batch payload' });
     }
+    if (batchItems.length > 1000) {
+      return res.status(413).json({ error: 'O lote excede o limite de 1.000 linhas. Divida a planilha em arquivos menores.' });
+    }
 
     const createdOrders: Order[] = [];
+    const skippedDuplicates: Array<{ purchase_order: string; sku: string; reason: string }> = [];
     const nowIso = new Date().toISOString();
 
     for (let i = 0; i < batchItems.length; i++) {
@@ -831,6 +1373,11 @@ app.post('/api/orders/batch', async (req, res) => {
         normalizeKeyPart(order.sku) === incomingSku
       );
       if (incomingPo && incomingSku && (alreadyExists || repeatedInBatch)) {
+        skippedDuplicates.push({
+          purchase_order: incomingPo,
+          sku: incomingSku,
+          reason: alreadyExists ? 'Pedido e SKU já cadastrados no MarketOps.' : 'Pedido e SKU repetidos neste mesmo lote.',
+        });
         continue;
       }
       
@@ -896,12 +1443,14 @@ app.post('/api/orders/batch', async (req, res) => {
         shipmentStatus = 'In Transit';
       }
 
+      const demoCustomerName = item.customer_name || (item.customer_order_id ? `Cliente Marketplace #${item.customer_order_id}` : `Cliente Marketplace Manaus`);
       const newOrder: Order = {
         id: orderId,
         date_order: dateOrder,
-        customer_name: item.customer_name || (item.customer_order_id ? `Cliente Marketplace #${item.customer_order_id}` : `Cliente Marketplace Manaus`),
-        customer_email: item.customer_email || '',
-        customer_phone: item.customer_phone || undefined,
+        customer_name: demoCustomerName,
+        customer_email: item.customer_email?.trim() || demoEmailFor(demoCustomerName),
+        customer_phone: item.customer_phone?.trim() || DEMO_PHONE,
+        customer_cpf: item.customer_cpf?.trim() || item.cpf_cliente?.trim() || '000.000.000-00',
         sku: (item.sku || `SKU-${seq}`).toString().trim(),
         product_name: (item.product_name || `Produto ${seq}`).trim(),
         asin: (item.asin || 'ASIN-GEN').trim().toUpperCase(),
@@ -924,6 +1473,7 @@ app.post('/api/orders/batch', async (req, res) => {
         eta: item.eta || undefined,
         di_date: item.di_date || undefined,
         entry_cd_date: item.entry_cd_date || undefined,
+        billing_date: item.billing_date || item.data_faturamento || undefined,
         delivery_client_date: item.delivery_client_date || undefined,
         cancellation_reason: orderStatus === 'Cancelled' ? (item.cancellation_reason || 'Cancelamento informado na base de origem (cliente ou loja).') : undefined,
         cancellation_updated_at: orderStatus === 'Cancelled' ? nowIso : undefined,
@@ -956,6 +1506,7 @@ app.post('/api/orders/batch', async (req, res) => {
         updated_at: nowIso
       };
 
+      if (sync_databricks) reconcileLifecycle(newOrder, item);
       createdOrders.push(newOrder);
     }
 
@@ -964,24 +1515,12 @@ app.post('/api/orders/batch', async (req, res) => {
     }
     orders.unshift(...createdOrders);
 
-    // Dispatched batch alert
-    alerts.unshift({
-      id: `ALT-BATCH-${Date.now()}`,
-      order_id: createdOrders[0]?.id || 'BATCH',
-      customer_name: 'MarketOps Batch Importer',
-      recipient_email: 'logistica@marketplace.com.br',
-      type: 'both',
-      event_type: 'Order Placed',
-      subject: `Batch Ingestion: ${createdOrders.length} novos pedidos integrados`,
-      message: `Foram enviados e processados com sucesso ${createdOrders.length} pedidos no portal e sincronizados com a tabela gold_logistics do Databricks.`,
-      timestamp: nowIso.replace('T', ' ').substring(0, 19),
-      status: 'delivered'
-    });
-
     res.status(201).json({
       success: true,
-      message: `Successfully ingested ${createdOrders.length} orders into the platform and Databricks Lakehouse.`,
+      message: `Successfully ingested ${createdOrders.length} orders into MarketOps and reconciled the available logistics fields.`,
       count: createdOrders.length,
+      skipped_count: skippedDuplicates.length,
+      skipped_duplicates: skippedDuplicates,
       orders: createdOrders
     });
   } catch (err: any) {
@@ -990,8 +1529,8 @@ app.post('/api/orders/batch', async (req, res) => {
   }
 });
 
-// 6. Databricks Shipment Sync endpoint for a specific order
-// Simulates / runs real-time sync with Databricks lakehouse table 'gold_logistics.marketplace_shipments'
+// 6. Demo logistics reconciliation endpoint for a specific order.
+// Kept under the historical /sync-databricks path for UI compatibility; this is not a live Databricks connection.
 app.post('/api/orders/:id/sync-databricks', async (req, res) => {
   const order = findOrderByIdOrPo(req.params.id);
   if (!order) {
@@ -1053,9 +1592,9 @@ app.post('/api/orders/:id/sync-databricks', async (req, res) => {
     item.shipment.events.unshift({
       id: `ev-${Date.now()}-${index}`,
       timestamp: updateTimestamp.replace('T', ' ').substring(0, 19),
-      location: nextShipmentStatus === 'Delivered' ? item.shipment.destination : 'Databricks Regional Logistics Hub',
+      location: nextShipmentStatus === 'Delivered' ? item.shipment.destination : 'MarketOps Logistics Reconciliation',
       status: nextShipmentStatus,
-      description: `Databricks Sync: Delta Lake updated status to [${nextShipmentStatus}]. Carrier ${item.shipment.carrier} checkpoint synchronized.`
+      description: `Demo reconciliation updated the shipment status to [${nextShipmentStatus}]. Carrier checkpoint: ${item.shipment.carrier || 'not informed'}.`
     });
   });
 
@@ -1068,37 +1607,45 @@ app.post('/api/orders/:id/sync-databricks', async (req, res) => {
     }
   }
 
-  // Trigger automated email/push alert for the shipment status change!
-  let alertEventType: DeliveryAlert['event_type'] = 'In Transit';
-  if (nextShipmentStatus === 'In Transit') alertEventType = 'Shipment Dispatched';
-  if (nextShipmentStatus === 'Out for Delivery') alertEventType = 'Out for Delivery';
-  if (nextShipmentStatus === 'Delivered') alertEventType = 'Delivered';
-  if (nextShipmentStatus === 'Cancelled') alertEventType = 'Cancelled';
-
   const groupedOrder = groupOrders(relatedItems)[0];
-  const alert = recordDeliveryAlert(
-    groupedOrder,
-    alertEventType,
-    `Delivery Alert: Order ${groupedOrder.id} is ${nextShipmentStatus}`,
-    `Live Databricks status change: purchase order ${groupedOrder.purchase_order || groupedOrder.id}, containing ${relatedItems.length} product(s), is now ${nextShipmentStatus}.`
-  );
+  const alert = currentStatus !== nextShipmentStatus
+    ? await dispatchDeliveryAlert(
+        groupedOrder,
+        eventTypeForShipmentStatus(nextShipmentStatus),
+      )
+    : null;
 
   res.json({
     success: true,
-    message: `Databricks shipment sync completed. Status updated to ${nextShipmentStatus}.`,
+    message: `Sincronização de demonstração concluída. Status: ${nextShipmentStatus}.`,
     order: groupedOrder,
     alert_triggered: alert
   });
 });
 
-// 7. Bulk sync all orders with Databricks
+// 7. Demo bulk logistics reconciliation. Production Databricks events use /api/databricks/reconcile.
 app.post('/api/databricks/sync-all', async (req, res) => {
+  if (databricksSyncEnabled()) {
+    await refreshDatabricksIfDue(true);
+    if (lastDatabricksPullError) return res.status(502).json({ error: lastDatabricksPullError });
+    return res.json({
+      success: true,
+      message: 'Sincronização real com o Databricks concluída.',
+      sync_time: lastDatabricksPullIso,
+      integration_mode: 'databricks-sql-warehouse',
+      lakehouse_table: databricksTableName().replace(/`/g, ''),
+      orders: groupOrders(orders).length,
+    });
+  }
   const nowUtc = new Date().toISOString().replace('T', ' ').substring(0, 19) + ' UTC';
   const previousOrders = orders.map(order => structuredClone(order));
+  const previousStatuses = new Map(
+    groupOrders(orders).map(order => [orderGroupKey(order), order.shipment.shipment_status] as const)
+  );
 
   orders.forEach(order => {
-    // Recalcula o estágio usando os dados já disponíveis. Quando a conexão
-    // corporativa estiver ativa, os campos serão atualizados antes desta etapa.
+    // Demo/local mode: recalculate lifecycle from the logistics fields already stored.
+    // Production Databricks changes should arrive through /api/databricks/reconcile.
     reconcileLifecycle(order);
   });
 
@@ -1113,11 +1660,25 @@ app.post('/api/databricks/sync-all', async (req, res) => {
     }
   }
 
+  const triggeredAlerts: DeliveryAlert[] = [];
+  for (const groupedOrder of groupOrders(orders)) {
+    const previous = previousStatuses.get(orderGroupKey(groupedOrder));
+    const current = groupedOrder.shipment.shipment_status;
+    if (previous && previous !== current) {
+      triggeredAlerts.push(await dispatchDeliveryAlert(
+        groupedOrder,
+        eventTypeForShipmentStatus(current),
+      ));
+    }
+  }
+
   res.json({
     success: true,
-    message: `${groupOrders(orders).length} pedidos foram atualizados automaticamente com base nas datas logísticas disponíveis.`,
+    message: `${groupOrders(orders).length} pedidos foram reconciliados com base nos dados logísticos disponíveis.`,
     sync_time: nowUtc,
-    lakehouse_table: 'gold_logistics.marketplace_shipments'
+    integration_mode: 'demo-reconciliation',
+    lakehouse_table: 'gold_logistics.marketplace_shipments',
+    alerts_triggered: triggeredAlerts.length,
   });
 });
 
@@ -1169,12 +1730,6 @@ app.patch('/api/orders/:id', async (req, res) => {
       description: `Manual order status changed from [${oldStatus}] to [${status}]`
     });
 
-    recordDeliveryAlert(
-      order,
-      status === 'Delivered' ? 'Delivered' : status === 'Shipped' ? 'Shipment Dispatched' : 'Cancelled',
-      `Order ${order.id} update: ${status}`,
-      `Your order status has changed to ${status}. Tracking: ${order.shipment.tracking_number}.`
-    );
   }
 
   order.updated_at = new Date().toISOString();
@@ -1211,7 +1766,14 @@ app.patch('/api/orders/:id', async (req, res) => {
       return res.status(500).json({ error: `Could not save the order update in PostgreSQL: ${error?.message || error}` });
     }
   }
-  res.json({ success: true, order: groupOrders(relatedItems)[0] });
+  const groupedOrder = groupOrders(relatedItems)[0];
+  if (status && status !== oldStatus) {
+    await dispatchDeliveryAlert(
+      groupedOrder,
+      eventTypeForShipmentStatus(groupedOrder.shipment.shipment_status),
+    );
+  }
+  res.json({ success: true, order: groupedOrder });
 });
 
 // 9. Delivery Alerts log
@@ -1222,22 +1784,118 @@ app.get('/api/alerts', (req, res) => {
   });
 });
 
+const statusChangeDate = (order: Order) => {
+  if (order.shipment.shipment_status === 'Cancelled') return order.cancellation_updated_at?.slice(0, 10) || order.updated_at.slice(0, 10);
+  if (order.shipment.shipment_status === 'Delivered') return order.delivery_client_date?.slice(0, 10) || order.updated_at.slice(0, 10);
+  if (order.billing_date) return order.billing_date.slice(0, 10);
+  if (order.entry_cd_date) return order.entry_cd_date.slice(0, 10);
+  if (order.eta) return order.eta.slice(0, 10);
+  if (order.etd) return order.etd.slice(0, 10);
+  if (order.marketplace_purchase_confirmed_at) return order.marketplace_purchase_confirmed_at.slice(0, 10);
+  return order.date_order.slice(0, 10) || order.updated_at.slice(0, 10);
+};
+
+const dailyStatusChanges = (date: string) => groupOrders(orders)
+  .filter(order => statusChangeDate(order) === date)
+  .map(order => ({
+    order,
+    date,
+    status: order.shipment.shipment_status,
+    event_type: eventTypeForShipmentStatus(order.shipment.shipment_status),
+    recipient: order.customer_email,
+  }));
+
+app.get('/api/alerts/changes', (req, res) => {
+  const date = String(req.query.date || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'Informe a data em YYYY-MM-DD.' });
+  const changes = dailyStatusChanges(date);
+  res.json({ date, count: changes.length, changes: changes.map(change => ({
+    order_id: change.order.purchase_order || change.order.id,
+    customer_name: change.order.customer_name,
+    status: statusLabelPt(change.status),
+    recipient_email: change.recipient,
+  })) });
+});
+
+app.get('/api/alerts/change-dates', (_req, res) => {
+  const counts = new Map<string, number>();
+  groupOrders(orders).forEach(order => {
+    const date = statusChangeDate(order);
+    if (date) counts.set(date, (counts.get(date) || 0) + 1);
+  });
+  res.json({ dates: [...counts.entries()].sort(([a], [b]) => b.localeCompare(a)).map(([date, count]) => ({ date, count })) });
+});
+
+app.post('/api/alerts/send-daily', async (req, res) => {
+  const date = String(req.body?.date || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'Informe a data em YYYY-MM-DD.' });
+  const isLocalGuestTest = process.env.NODE_ENV !== 'production' && !req.header('authorization');
+  const localRecipient = process.env.DEMO_ALERT_RECIPIENT?.trim() || process.env.SMTP_USER?.trim();
+  if (isLocalGuestTest && !localRecipient) return res.status(503).json({ error: 'Configure SMTP_USER ou DEMO_ALERT_RECIPIENT para o teste local.' });
+
+  const changes = dailyStatusChanges(date);
+  const results: DeliveryAlert[] = [];
+  let skipped = 0;
+  for (const change of changes) {
+    const dispatchKey = `${date}:${orderGroupKey(change.order)}:${change.status}`;
+    if (dailyAlertDispatchKeys.has(dispatchKey)) { skipped += 1; continue; }
+    const alert = await dispatchDeliveryAlert(
+      change.order,
+      change.event_type,
+      undefined,
+      undefined,
+      isLocalGuestTest ? localRecipient : undefined,
+    );
+    results.push(alert);
+    if (alert.status === 'sent' || alert.status === 'simulated' || alert.status === 'delivered') dailyAlertDispatchKeys.add(dispatchKey);
+  }
+  res.json({
+    success: results.every(alert => alert.status !== 'failed'),
+    date,
+    found: changes.length,
+    sent: results.filter(alert => alert.status === 'sent').length,
+    simulated: results.filter(alert => alert.status === 'simulated').length,
+    failed: results.filter(alert => alert.status === 'failed').length,
+    skipped,
+    recipients: [...new Set(results.map(alert => alert.recipient_email).filter(Boolean))],
+    alerts: results,
+  });
+});
+
 // 10. Send / Test Custom Automated Alert
-app.post('/api/alerts/test', (req, res) => {
+app.post('/api/alerts/test', async (req, res) => {
   const { order_id, event_type, recipient_email, message } = req.body;
   const targetOrder = findOrderByIdOrPo(String(order_id || ''));
   if (!targetOrder) return res.status(404).json({ error: `Order ${order_id || ''} not found` });
+  if (recipient_email && !emailPattern.test(String(recipient_email).trim())) {
+    return res.status(400).json({ error: 'Informe um e-mail de teste válido.' });
+  }
+  const remoteAddress = req.socket.remoteAddress || '';
+  const isLocalGuestTest = process.env.NODE_ENV !== 'production'
+    && (remoteAddress === '127.0.0.1' || remoteAddress === '::1' || remoteAddress === '::ffff:127.0.0.1')
+    && !req.header('authorization');
+  if (isLocalGuestTest) {
+    const allowedRecipients = [process.env.SMTP_USER, process.env.DEMO_ALERT_RECIPIENT]
+      .map(value => value?.trim().toLowerCase())
+      .filter(Boolean);
+    const requestedRecipient = String(recipient_email || '').trim().toLowerCase();
+    if (!requestedRecipient || !allowedRecipients.includes(requestedRecipient)) {
+      return res.status(403).json({ error: 'No teste visitante local, use somente SMTP_USER ou DEMO_ALERT_RECIPIENT.' });
+    }
+  }
 
-  const alert = recordDeliveryAlert(
+  const event = (event_type || 'Out for Delivery') as DeliveryAlert['event_type'];
+  const alert = await dispatchDeliveryAlert(
     targetOrder,
-    event_type || 'In Transit',
-    `Automated Alert Test: ${event_type || 'Status Update'}`,
-    message || `This is a test notification for order ${targetOrder.id} dispatched via simulated email/push service.`
+    event,
+    `[TESTE] [MarketOps] ${eventTypeLabelPt(event)} • Pedido ${targetOrder.purchase_order || targetOrder.id}`,
+    message || `Olá, ${targetOrder.customer_name}. Este é um teste: o pedido ${targetOrder.purchase_order || targetOrder.id} foi atualizado para ${eventTypeLabelPt(event)}.`,
+    recipient_email,
   );
 
   res.json({
-    success: true,
-    message: 'Test notification alert successfully queued and dispatched',
+    success: alert.status !== 'failed',
+    message: alert.status === 'sent' ? 'E-mail de teste enviado via SMTP.' : 'Alerta de teste registrado no histórico.',
     alert
   });
 });
@@ -1245,61 +1903,68 @@ app.post('/api/alerts/test', (req, res) => {
 // 11. Send the monitoring report through the configured corporate SMTP server.
 app.post('/api/reports/email', async (req, res) => {
   try {
-    const { to, cc, subject, message, language } = req.body || {};
+    const { to, cc, subject, message, language, sender_email, sender_name } = req.body || {};
     const isEnglish = language === 'en';
     const label = (pt: string, en: string) => isEnglish ? en : pt;
-    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     const toList = String(to || '').split(/[;,]/).map(value => value.trim()).filter(Boolean);
     const invalidTo = toList.find(email => !emailPattern.test(email));
     if (!toList.length || invalidTo) {
       return res.status(400).json({ error: label('Informe um e-mail de destinatário válido.', 'Enter a valid recipient email address.') });
     }
 
-    const smtpHost = process.env.SMTP_HOST;
-    const smtpPort = Number(process.env.SMTP_PORT || 587);
-    const smtpUser = process.env.SMTP_USER;
-    const smtpPassword = (process.env.SMTP_PASSWORD || '').replace(/\s+/g, '');
-    const smtpFrom = process.env.SMTP_FROM || smtpUser;
-    if (!smtpHost || !smtpUser || !smtpPassword || !smtpFrom) {
+    const smtp = smtpSettings();
+    if (!smtp.configured) {
       return res.status(503).json({
-        error: 'O envio ainda não está configurado. Preencha SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD e SMTP_FROM no arquivo .env.local.'
+        error: label(
+          'O SMTP não está configurado neste ambiente. Em produção (Render), adicione SMTP_HOST, SMTP_PORT, SMTP_SECURE, SMTP_USER, SMTP_PASSWORD e SMTP_FROM em Environment.',
+          'SMTP is not configured in this environment. In production (Render), add SMTP_HOST, SMTP_PORT, SMTP_SECURE, SMTP_USER, SMTP_PASSWORD and SMTP_FROM under Environment.'
+        )
       });
     }
+    const configuredSender = smtp.from?.match(/<([^>]+)>/)?.[1] || smtp.from || smtp.user || '';
+    const allowedSenders = [...new Set([smtp.user, configuredSender, ...(process.env.SMTP_ALLOWED_FROM_ADDRESSES || '').split(/[;,]/)]
+      .map(value => value?.trim().toLowerCase()).filter(Boolean))];
+    const requestedSender = String(sender_email || configuredSender).trim().toLowerCase();
+    if (!emailPattern.test(requestedSender) || !allowedSenders.includes(requestedSender)) {
+      return res.status(400).json({ error: label('O remetente deve ser a conta SMTP ou um alias autorizado.', 'Sender must be the SMTP account or an authorized alias.') });
+    }
+    const safeSenderName = String(sender_name || 'MarketOps').trim().replace(/[\r\n"]/g, '').slice(0, 80) || 'MarketOps';
+    const fromHeader = `${safeSenderName} <${requestedSender}>`;
 
     const grouped = groupOrders(orders);
     const headersPt = [
       'Data da compra', 'SKU Marketplace', 'Descrição do Material', 'SKU Principal (ASIN)', 'Seller',
       'Origem (País Seller)', 'Ordem de Cliente', 'Ordem de Compra', 'Quantidade',
       'Valor Unitário Seller (USD)', 'Valor Total Seller (USD)', 'Status do Pedido', 'Cliente',
-      'Invoice', 'WR Magaya', 'Compra no Marketplace Confirmada', 'Data da Confirmação da Compra',
+      'E-mail', 'Telefone', 'CPF', 'Invoice', 'WR Magaya', 'Compra no Marketplace Confirmada', 'Data da Confirmação da Compra',
       'Número de Rastreio', 'Status da Entrega', 'Previsão de Entrega',
       'Unidade', 'Status Operacional', 'Descrição do Status', 'Limite de Entrega (dias)',
       'Data do Pedido Marketplace', 'ID do Pedido Marketplace', 'Grupo da Conta',
       'Status da Conta', 'Responsável', 'Data WR', 'ETA', 'ETD', 'Data DI', 'Entrada CD',
-      'Entrega ao Cliente', 'Justificativa do Cancelamento', 'Data da Atualização do Cancelamento'
+      'Data de Faturamento', 'Entrega ao Cliente', 'Justificativa do Cancelamento', 'Data da Atualização do Cancelamento'
     ];
     const headersEn = [
       'Purchase Date', 'Marketplace SKU', 'Material Description', 'Primary SKU (ASIN)', 'Seller',
       'Seller Country', 'Customer Order', 'Purchase Order', 'Quantity', 'Seller Unit Cost (USD)',
-      'Seller Total Cost (USD)', 'Order Status', 'Customer', 'Invoice', 'Warehouse Receipt',
+      'Seller Total Cost (USD)', 'Order Status', 'Customer', 'Email', 'Phone', 'CPF', 'Invoice', 'Warehouse Receipt',
       'Marketplace Purchase Confirmed', 'Purchase Confirmation Date', 'Tracking Number',
       'Shipment Status', 'Estimated Delivery', 'Unit', 'Operational Status', 'Status Description',
       'Delivery Limit (days)', 'Marketplace Order Date', 'Marketplace Order ID', 'Account Group',
       'Account Status', 'Owner', 'WR Date', 'ETA', 'ETD', 'DI Date', 'Distribution Center Entry',
-      'Customer Delivery', 'Cancellation Reason', 'Cancellation Updated At'
+      'Billing Date', 'Customer Delivery', 'Cancellation Reason', 'Cancellation Updated At'
     ];
     const headers = isEnglish ? headersEn : headersPt;
     const rows = orders.map(order => [
       order.date_order, String(order.sku || ''), order.product_name, String(order.asin || ''), order.marketplace,
       order.seller_country || '', String(order.customer_order_id || ''), String(order.purchase_order || order.id),
       order.quantity, order.price_unit, order.seller_usd_total ?? order.total_price, order.status,
-      order.customer_name, order.invoice || '', order.magaya_wr || '', order.marketplace_purchase_confirmed ? label('SIM','YES') : label('NÃO','NO'),
+      order.customer_name, order.customer_email || '', order.customer_phone || '', order.customer_cpf || '', order.invoice || '', order.magaya_wr || '', order.marketplace_purchase_confirmed ? label('SIM','YES') : label('NÃO','NO'),
       order.marketplace_purchase_confirmed_at || '', String(order.shipment.tracking_number || ''),
       order.shipment.shipment_status, order.shipment.estimated_delivery || '', order.unit_measure || '',
       order.operational_status || '', order.status_text || '', order.delivery_limit_days ?? '',
       order.marketplace_order_date || '', order.marketplace_order_id || '', order.account_group || '',
       order.account_order_status || '', order.account_user || '', order.wr_date || '', order.eta || '',
-      order.etd || '', order.di_date || '', order.entry_cd_date || '', order.delivery_client_date || '',
+      order.etd || '', order.di_date || '', order.entry_cd_date || '', order.billing_date || '', order.delivery_client_date || '',
       order.cancellation_reason || '', order.cancellation_updated_at || ''
     ]);
     const sheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
@@ -1412,18 +2077,14 @@ app.post('/api/reports/email', async (req, res) => {
       <h3 style="color:#c2413b;text-align:center;margin-top:28px">${label('Pedidos — últimos 7 dias','Orders — Last 7 Days')}</h3><table style="border-collapse:collapse;width:100%;font-size:10px"><tr>${(isEnglish?['Date','Customer Order','PO','SKU','Product','Qty.','Status','Tracking','ETA']:['Data','Ordem Cliente','PO','SKU','Produto','Qtd.','Status','Rastreio','Previsão']).map(x=>`<th style="${head}">${x}</th>`).join('')}</tr>${recent.length?recent.map(o=>`<tr><td style="${cell}">${o.date_order}</td><td style="${cell}">${o.customer_order_id||''}</td><td style="${cell}">${o.purchase_order||''}</td><td style="${cell}">${o.sku}</td><td style="${cell};text-align:left">${escapeHtml(o.product_name)}</td><td style="${cell}">${o.quantity}</td><td style="${cell}">${o.status}</td><td style="${cell}">${o.shipment.tracking_number||''}</td><td style="${cell}">${o.shipment.estimated_delivery||''}</td></tr>`).join(''):`<tr><td colspan="9" style="${cell}">${label('Nenhum pedido no período.','No orders in the selected period.')}</td></tr>`}</table>
       <p style="font-size:12px;color:#64748b;margin-top:20px">${label(`A planilha detalhada com ${rows.length} itens está anexada a este e-mail.`,`The detailed spreadsheet with ${rows.length} items is attached to this email.`)}</p></div></div>`;
 
-    const transporter = nodemailer.createTransport({
-      host: smtpHost,
-      port: smtpPort,
-      secure: String(process.env.SMTP_SECURE).toLowerCase() === 'true',
-      auth: { user: smtpUser, pass: smtpPassword },
-    });
+    const transporter = createSmtpTransport(smtp);
     const ccList = String(cc || '').split(/[;,]/).map(value => value.trim()).filter(Boolean);
     const invalidCc = ccList.find(email => !emailPattern.test(email));
     if (invalidCc) return res.status(400).json({ error: `E-mail em cópia inválido: ${invalidCc}` });
 
     const info = await transporter.sendMail({
-      from: smtpFrom,
+      from: fromHeader,
+      replyTo: requestedSender,
       to: toList,
       cc: ccList,
       subject: subject || `${label('Relatório de Monitoramento','Monitoring Report')} - ${new Date().toLocaleDateString(isEnglish?'en-US':'pt-BR')}`,
@@ -1446,7 +2107,7 @@ async function startServer() {
     try {
       const databaseOrders = await loadOrdersFromPostgres();
       if (!databaseOrders.length) throw new Error('The database is connected but returned no order items.');
-      orders = deduplicateOrderLines(databaseOrders);
+      orders = applyDemoContactDefaults(deduplicateOrderLines(databaseOrders));
       activeDataSource = 'postgres';
       databaseConnectionStatus = 'connected';
       databaseConnectionMessage = `PostgreSQL connected. Loaded ${orders.length} order items.`;
@@ -1456,6 +2117,13 @@ async function startServer() {
       databaseConnectionStatus = 'error';
       databaseConnectionMessage = `PostgreSQL connection failed; using the bundled synthetic dataset. ${error?.message || ''}`.trim();
       console.error(databaseConnectionMessage);
+    }
+  }
+
+  if (databricksSyncEnabled()) {
+    await refreshDatabricksIfDue(true);
+    if (lastDatabricksPullError) {
+      console.error(`Databricks initial sync unavailable: ${lastDatabricksPullError}`);
     }
   }
 

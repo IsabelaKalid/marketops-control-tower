@@ -21,7 +21,7 @@ export const NewOrderModal: React.FC<NewOrderModalProps> = ({
   const [dateOrder, setDateOrder] = useState(todayStr);
   const [customerName, setCustomerName] = useState('');
   const [customerEmail, setCustomerEmail] = useState('');
-  const [customerPhone, setCustomerPhone] = useState('');
+  const [customerPhone, setCustomerPhone] = useState('92 99999-9999');
   const [sku, setSku] = useState('');
   const [productName, setProductName] = useState('');
   const [asin, setAsin] = useState('');
@@ -47,8 +47,8 @@ export const NewOrderModal: React.FC<NewOrderModalProps> = ({
   const applyPreset = (type: 'tech' | 'gaming' | 'audio') => {
     if (type === 'tech') {
       setCustomerName('Lucas Silva');
-      setCustomerEmail('lucas.silva@techcorp.com');
-      setCustomerPhone('+1 (305) 912-3456');
+      setCustomerEmail('lucas.silva@example.com');
+      setCustomerPhone('92 99999-9999');
       setProductName('Logitech MX Master 3S Wireless Performance Mouse');
       setSku('LOGI-MXM3S-GRY');
       setAsin('B09HM94VDS');
@@ -61,8 +61,8 @@ export const NewOrderModal: React.FC<NewOrderModalProps> = ({
       setNotes('Customer requested package stealth packaging');
     } else if (type === 'gaming') {
       setCustomerName('Amanda Chen');
-      setCustomerEmail('a.chen@esports.io');
-      setCustomerPhone('+1 (206) 431-8977');
+      setCustomerEmail('amanda.chen@example.com');
+      setCustomerPhone('92 99999-9999');
       setProductName('Valve Steam Deck OLED 512GB Handheld Gaming Console');
       setSku('VALVE-SDECK-512OLED');
       setAsin('B0CQKTY72K');
@@ -75,8 +75,8 @@ export const NewOrderModal: React.FC<NewOrderModalProps> = ({
       setNotes('Fragile handling label required');
     } else {
       setCustomerName('Thiago Rossi');
-      setCustomerEmail('thiago.rossi@sp.gov.br');
-      setCustomerPhone('+55 11 99123-7766');
+      setCustomerEmail('thiago.rossi@example.com');
+      setCustomerPhone('92 99999-9999');
       setProductName('Bose QuietComfort 45 Bluetooth Wireless Headphones');
       setSku('BOSE-QC45-SLV');
       setAsin('B098FH5P3C');
@@ -169,7 +169,7 @@ export const NewOrderModal: React.FC<NewOrderModalProps> = ({
               Insert New Marketplace Order
             </h2>
             <p className="text-xs text-slate-500">
-              Registers order into ledger, schedules Databricks logistics delta table, and arms automated delivery alerts.
+              Creates the order in MarketOps and prepares it for logistics status reconciliation and automated alerts.
             </p>
           </div>
           <button
@@ -291,11 +291,11 @@ export const NewOrderModal: React.FC<NewOrderModalProps> = ({
             </div>
             <div>
               <label className="block font-medium text-zinc-700 mb-1">
-                Email (Automated Alerts)
+                Email (Automated Alerts / Demo)
               </label>
               <input
                 type="email"
-                placeholder="alerts@client.com"
+                placeholder="cliente.teste@example.com"
                 value={customerEmail}
                 onChange={(e) => setCustomerEmail(e.target.value)}
                 className="w-full px-3 py-2 bg-zinc-50 border border-zinc-300 rounded-md text-zinc-900 focus:outline-none focus:border-zinc-900"
@@ -303,15 +303,16 @@ export const NewOrderModal: React.FC<NewOrderModalProps> = ({
             </div>
             <div>
               <label className="block font-medium text-zinc-700 mb-1">
-                Phone (Push/SMS alerts)
+                Phone (Demo Contact)
               </label>
               <input
                 type="tel"
-                placeholder="+1 (555) 000-0000"
+                placeholder="92 99999-9999"
                 value={customerPhone}
-                onChange={(e) => setCustomerPhone(e.target.value)}
-                className="w-full px-3 py-2 bg-zinc-50 border border-zinc-300 rounded-md text-zinc-900 focus:outline-none focus:border-zinc-900"
+                readOnly
+                className="w-full px-3 py-2 bg-zinc-100 border border-zinc-300 rounded-md text-zinc-900 cursor-not-allowed"
               />
+              <p className="text-[10px] text-zinc-500 mt-1">Demo phone is fixed at 92 99999-9999.</p>
             </div>
           </div>
 

@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useRef } from 'react';
+import * as XLSX from 'xlsx';
 import { apiFetch } from '../lib/api';
 import { 
   X, 
@@ -40,6 +41,7 @@ export const BatchOrderImportModal: React.FC<BatchOrderImportModalProps> = ({
   const [destinationHub, setDestinationHub] = useState<string>('CD Marketplace - Manaus, AM');
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [importSummary, setImportSummary] = useState<{ included: number; skipped: Array<{ purchase_order: string; sku: string; reason: string }> } | null>(null);
   const [dragOver, setDragOver] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -55,15 +57,33 @@ export const BatchOrderImportModal: React.FC<BatchOrderImportModalProps> = ({
 
   // Handle file upload
   const handleFileUpload = (file: File) => {
+    setErrorMsg(null);
+    setImportSummary(null);
     const reader = new FileReader();
     reader.onload = (e) => {
-      const text = e.target?.result as string;
-      if (text) {
-        setInputText(text);
+      try {
+        const result = e.target?.result;
+        if (!result) return;
+        const isExcel = /\.(xlsx|xls)$/i.test(file.name);
+        if (isExcel) {
+          const workbook = XLSX.read(result, { type: 'array', cellDates: false });
+          const firstSheetName = workbook.SheetNames[0];
+          if (!firstSheetName) throw new Error('A planilha não possui nenhuma aba para importar.');
+          const worksheet = workbook.Sheets[firstSheetName];
+          const text = XLSX.utils.sheet_to_csv(worksheet, { FS: '\t', RS: '\n', blankrows: false });
+          if (!text.trim()) throw new Error('A primeira aba da planilha está vazia.');
+          setInputText(text);
+        } else {
+          setInputText(String(result));
+        }
         setActiveTab('paste');
+      } catch (error) {
+        setErrorMsg(error instanceof Error ? error.message : 'Não foi possível ler o arquivo selecionado.');
       }
     };
-    reader.readAsText(file);
+    reader.onerror = () => setErrorMsg('Não foi possível abrir o arquivo selecionado.');
+    if (/\.(xlsx|xls)$/i.test(file.name)) reader.readAsArrayBuffer(file);
+    else reader.readAsText(file);
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -108,7 +128,12 @@ export const BatchOrderImportModal: React.FC<BatchOrderImportModalProps> = ({
       const data = await res.json();
       if (data.orders && Array.isArray(data.orders)) {
         onOrdersImported(data.orders);
-        onClose();
+        const skipped = Array.isArray(data.skipped_duplicates) ? data.skipped_duplicates : [];
+        if (skipped.length) {
+          setImportSummary({ included: data.orders.length, skipped });
+        } else {
+          onClose();
+        }
       } else {
         throw new Error('Unexpected response format from server');
       }
@@ -156,7 +181,7 @@ export const BatchOrderImportModal: React.FC<BatchOrderImportModalProps> = ({
                 </span>
               </div>
               <p className="text-xs text-slate-300">
-                Paste spreadsheet table columns or upload CSV/TSV to ingest orders into MarketOps &amp; Databricks Lakehouse.
+                Paste spreadsheet columns or upload XLSX/CSV/TSV to ingest orders into MarketOps and prepare logistics reconciliation.
               </p>
             </div>
           </div>
@@ -195,6 +220,15 @@ export const BatchOrderImportModal: React.FC<BatchOrderImportModalProps> = ({
               <span>{errorMsg}</span>
             </div>
           )}
+          {importSummary && (
+            <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-xs text-amber-950">
+              <p className="font-bold">Importação concluída: {importSummary.included} item(ns) incluído(s) e {importSummary.skipped.length} duplicado(s) ignorado(s).</p>
+              <div className="mt-2 max-h-32 space-y-1 overflow-y-auto rounded-lg bg-white/70 p-2 font-mono">
+                {importSummary.skipped.map((item, index) => <div key={`${item.purchase_order}-${item.sku}-${index}`}><strong>{item.purchase_order}</strong> + SKU <strong>{item.sku}</strong> — {item.reason}</div>)}
+              </div>
+              <button type="button" onClick={onClose} className="mt-3 rounded-lg bg-amber-700 px-3 py-2 font-bold text-white hover:bg-amber-800">Fechar resultado</button>
+            </div>
+          )}
 
           {/* Mode Tabs & Action shortcuts */}
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-3">
@@ -222,7 +256,7 @@ export const BatchOrderImportModal: React.FC<BatchOrderImportModalProps> = ({
                 }`}
               >
                 <UploadCloud className="w-3.5 h-3.5" />
-                <span>Upload CSV / TSV File</span>
+                <span>Upload XLSX / CSV / TSV</span>
               </button>
             </div>
 
@@ -292,7 +326,7 @@ export const BatchOrderImportModal: React.FC<BatchOrderImportModalProps> = ({
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".csv,.tsv,.txt"
+                accept=".xlsx,.xls,.csv,.tsv,.txt"
                 className="hidden"
                 onChange={(e) => {
                   if (e.target.files && e.target.files[0]) {
@@ -307,7 +341,7 @@ export const BatchOrderImportModal: React.FC<BatchOrderImportModalProps> = ({
                 Click to browse or drag &amp; drop your spreadsheet file
               </h4>
               <p className="text-xs text-slate-400 mt-1">
-                Supports .csv, .tsv, or tab-delimited text exports
+                Supports .xlsx, .xls, .csv, .tsv, or tab-delimited text exports
               </p>
             </div>
           )}
@@ -352,7 +386,7 @@ export const BatchOrderImportModal: React.FC<BatchOrderImportModalProps> = ({
                 />
                 <span className="text-xs font-medium text-slate-700 flex items-center gap-1">
                   <Database className="w-3.5 h-3.5 text-amber-500" />
-                  Sync to Databricks Lakehouse
+                  Run logistics reconciliation after import
                 </span>
               </label>
             </div>

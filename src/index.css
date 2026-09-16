@@ -101,3 +101,144 @@ html.dark body { background: #111827; }
 .dark .text-zinc-300 { color: #d4dfed !important; }
 .dark .divide-slate-50 > :not(:last-child),
 .dark .divide-slate-100 > :not(:last-child) { border-color: #52647e !important; }
+
+:root {
+  color-scheme: light;
+  --chart-grid: #e2e8f0;
+  --chart-label: #64748b;
+  --chart-card: #ffffff;
+}
+
+html.dark {
+  --chart-grid: #52647e;
+  --chart-label: #b8c5d6;
+  --chart-card: #182235;
+}
+
+/* Extra contrast coverage for translucent cards used by modals, reports and alerts. */
+.dark .bg-slate-50\/60,
+.dark .bg-slate-50\/70,
+.dark .bg-blue-50\/50,
+.dark .bg-blue-50\/60,
+.dark .bg-blue-50\/70,
+.dark .bg-green-50\/50,
+.dark .bg-green-50\/60,
+.dark .bg-emerald-50\/50,
+.dark .bg-rose-50\/60,
+.dark .bg-indigo-50\/30,
+.dark .bg-indigo-50\/60 { background-color: #202d42 !important; }
+
+.dark .bg-slate-100\/80 { background-color: #26354b !important; }
+.dark .bg-amber-50\/70 { background-color: #3b311f !important; }
+.dark .bg-amber-50\/80 { background-color: #3b311f !important; }
+.dark .bg-emerald-100 { background-color: #1c493d !important; }
+.dark .bg-green-100 { background-color: #1c493d !important; }
+.dark .bg-rose-100,
+.dark .bg-red-100 { background-color: #512938 !important; }
+.dark .bg-amber-100 { background-color: #4a3c21 !important; }
+.dark .bg-indigo-100 { background-color: #353a68 !important; }
+
+.dark .text-green-800,
+.dark .text-green-900,
+.dark .text-emerald-900,
+.dark .text-emerald-950 { color: #a7f3d0 !important; }
+.dark .text-rose-900,
+.dark .text-red-800,
+.dark .text-red-900 { color: #fecdd3 !important; }
+.dark .text-amber-800,
+.dark .text-amber-900,
+.dark .text-amber-950 { color: #fde68a !important; }
+.dark .text-blue-950 { color: #dbeafe !important; }
+.dark .text-indigo-600,
+.dark .text-indigo-800,
+.dark .text-indigo-900 { color: #c7d2fe !important; }
+.dark .text-purple-600,
+.dark .text-purple-700 { color: #d8b4fe !important; }
+
+.dark .border-slate-300,
+.dark .border-zinc-300 { border-color: #52647e !important; }
+.dark .border-blue-100 { border-color: #365a86 !important; }
+.dark .border-rose-300,
+.dark .border-red-300 { border-color: #8f4c61 !important; }
+.dark .border-amber-300 { border-color: #8d713b !important; }
+
+.dark input::placeholder,
+.dark textarea::placeholder { color: #94a3b8 !important; opacity: 1; }
+
+.dark input:-webkit-autofill,
+.dark input:-webkit-autofill:hover,
+.dark input:-webkit-autofill:focus {
+  -webkit-text-fill-color: #e5edf7;
+  -webkit-box-shadow: 0 0 0 1000px #202c40 inset;
+  transition: background-color 9999s ease-in-out 0s;
+}
+
+/* Shared hover language: a subtle blue/violet/emerald gradient across cards,
+   panels and navigation blocks without changing their resting colors. */
+.marketops-shell :where(aside nav button, main section, main article, main button, main [class*="rounded-xl"][class*="border"], main [class*="rounded-2xl"][class*="border"]) {
+  transition: background-image 180ms ease, border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
+}
+
+.marketops-shell :where(aside nav button, main section, main article, main button, main [class*="rounded-xl"][class*="border"], main [class*="rounded-2xl"][class*="border"]):hover:not(:disabled) {
+  background-image: linear-gradient(135deg, rgba(59, 130, 246, 0.10), rgba(139, 92, 246, 0.08), rgba(16, 185, 129, 0.08));
+  border-color: rgba(96, 165, 250, 0.55);
+  box-shadow: 0 10px 24px rgba(37, 99, 235, 0.09);
+}
+
+.marketops-shell aside nav button:hover:not(:disabled) {
+  background-image: linear-gradient(100deg, rgba(37, 99, 235, 0.25), rgba(124, 58, 237, 0.18), rgba(16, 185, 129, 0.12));
+}
+
+.dark .marketops-shell :where(aside nav button, main section, main article, main button, main [class*="rounded-xl"][class*="border"], main [class*="rounded-2xl"][class*="border"]):hover:not(:disabled) {
+  background-image: linear-gradient(135deg, rgba(59, 130, 246, 0.18), rgba(139, 92, 246, 0.15), rgba(16, 185, 129, 0.10));
+  border-color: rgba(96, 165, 250, 0.65);
+}
+
+@keyframes marketops-gradient-hover {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+.marketops-shell :where(section, article, button, [class*="rounded-lg"][class*="border"], [class*="rounded-xl"][class*="border"], [class*="rounded-2xl"][class*="border"]) {
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease, background-position 350ms ease;
+}
+
+.marketops-shell :where(section, article, button, [class*="rounded-lg"][class*="border"], [class*="rounded-xl"][class*="border"], [class*="rounded-2xl"][class*="border"]):hover:not(:disabled) {
+  background-image: linear-gradient(120deg, rgba(59, 130, 246, 0.14), rgba(139, 92, 246, 0.12), rgba(16, 185, 129, 0.11), rgba(59, 130, 246, 0.14));
+  background-size: 240% 240%;
+  animation: marketops-gradient-hover 2.8s ease infinite;
+  border-color: rgba(96, 165, 250, 0.68);
+  box-shadow: 0 12px 28px rgba(37, 99, 235, 0.13);
+  transform: translateY(-2px);
+}
+
+.marketops-shell table tbody tr {
+  transition: transform 160ms ease, box-shadow 160ms ease, background-position 300ms ease;
+}
+
+.marketops-shell table tbody tr:hover {
+  background-image: linear-gradient(90deg, rgba(59, 130, 246, 0.10), rgba(139, 92, 246, 0.08), rgba(16, 185, 129, 0.09));
+  background-size: 200% 100%;
+  box-shadow: inset 4px 0 0 #3b82f6;
+  transform: translateX(2px);
+}
+
+.dark .marketops-shell :where(section, article, button, [class*="rounded-lg"][class*="border"], [class*="rounded-xl"][class*="border"], [class*="rounded-2xl"][class*="border"]):hover:not(:disabled) {
+  background-image: linear-gradient(120deg, rgba(37, 99, 235, 0.25), rgba(109, 40, 217, 0.22), rgba(5, 150, 105, 0.17), rgba(37, 99, 235, 0.25));
+  border-color: rgba(96, 165, 250, 0.72);
+  box-shadow: 0 12px 30px rgba(2, 6, 23, 0.38);
+}
+
+.dark .marketops-shell table tbody tr:hover {
+  background-image: linear-gradient(90deg, rgba(37, 99, 235, 0.24), rgba(109, 40, 217, 0.18), rgba(5, 150, 105, 0.14)) !important;
+  box-shadow: inset 4px 0 0 #60a5fa;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .marketops-shell *, .marketops-shell *::before, .marketops-shell *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+}

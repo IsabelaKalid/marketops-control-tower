@@ -27,7 +27,7 @@ export const OrderFiltersBar: React.FC<OrderFiltersBarProps> = ({
   const statusOptions = ['All', 'Pending', 'Shipped', 'Delivered', 'Cancelled'];
   const operationalOptions = [
     ['All', pt ? 'Todas as situações' : 'All situations'],
-    ['in_transit_invoiced', pt ? 'Em trânsito (faturado, não entregue)' : 'In Transit (invoiced, not delivered)'],
+    ['at_distribution_center', pt ? 'Pedido no centro de distribuição (aguardando faturamento)' : 'At distribution center (awaiting billing)'],
     ['not_purchased', pt ? 'Atenção: compra não confirmada' : 'Attention: purchase not confirmed'],
     ['missing_wr', pt ? 'Sem WR após 10+ dias da compra' : 'No WR record 10+ days after purchase'],
     ['wr_no_eta_invoice_10', pt ? 'Sem ETA ou Invoice (10+ dias na warehouse)' : 'No ETA or Invoice (stalled 10+ days at warehouse)'],
@@ -95,7 +95,7 @@ export const OrderFiltersBar: React.FC<OrderFiltersBarProps> = ({
         {/* Seller / Marketplace Filter */}
         <div className="flex items-center gap-2">
           <label htmlFor="select-marketplace" className="text-xs font-semibold text-slate-500 whitespace-nowrap uppercase tracking-wider">
-            Seller:
+            {pt ? 'Vendedor:' : 'Seller:'}
           </label>
           <select
             id="select-marketplace"
@@ -105,7 +105,7 @@ export const OrderFiltersBar: React.FC<OrderFiltersBarProps> = ({
           >
             {sellerOptions.map((s) => (
               <option key={s} value={s}>
-                {s === 'All' ? (pt ? 'Todos os sellers' : 'All Sellers') : s}
+                {s === 'All' ? (pt ? 'Todos os vendedores' : 'All Sellers') : s}
               </option>
             ))}
           </select>
