@@ -659,8 +659,6 @@ const customerStage = (order: Order) => {
 };
 
 const customerMessageForEvent = (order: Order, eventType: DeliveryAlert['event_type']) => {
-  const stage = customerStage(order);
-  if (stage.message) return stage.message;
   const po = order.purchase_order || order.id;
   const eta = order.shipment.estimated_delivery;
   const tracking = order.shipment.tracking_number;
@@ -712,14 +710,14 @@ const buildDeliveryAlertHtml = (order: Order, title: string, message: string, ev
   return `<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:Arial,sans-serif;color:#172033">
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5f9;padding:28px 12px"><tr><td align="center">
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:620px;background:#ffffff;border:1px solid #dbe4ef;border-radius:16px;overflow:hidden">
-        <tr><td style="background:#17324d;color:#ffffff;padding:22px 26px"><div style="font-size:12px;opacity:.8">MarketOps • Atualização automática de entrega</div><h2 style="margin:6px 0 0;font-size:20px">${escapeHtml(stage.title || title)}</h2></td></tr>
+        <tr><td style="background:#17324d;color:#ffffff;padding:22px 26px"><div style="font-size:12px;opacity:.8">MarketOps • Atualização automática de entrega</div><h2 style="margin:6px 0 0;font-size:20px">${escapeHtml(title || stage.title)}</h2></td></tr>
         <tr><td style="padding:26px">
           <p style="margin:0 0 14px;font-size:14px">Olá, <strong>${escapeHtml(order.customer_name)}</strong>.</p>
           <p style="margin:0 0 18px;font-size:14px;line-height:1.6">${escapeHtml(message)}</p>
           ${progress}
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:separate;border-spacing:0 8px;font-size:13px">
             <tr><td style="color:#64748b;width:42%">Pedido</td><td style="font-weight:700">${escapeHtml(po)}</td></tr>
-            <tr><td style="color:#64748b">CPF</td><td>${escapeHtml(order.customer_cpf || 'Não informado')} ${order.customer_cpf ? '<span style="color:#94a3b8;font-size:10px">(dado fictício de demonstração)</span>' : ''}</td></tr>
+            <tr><td style="color:#64748b">CPF</td><td>${escapeHtml(order.customer_cpf || 'Não informado')}</td></tr>
             <tr><td style="color:#64748b">Status</td><td style="font-weight:700;color:#1d4ed8">${escapeHtml(status)}</td></tr>
             <tr><td style="color:#64748b">Rastreio</td><td style="font-weight:700">${escapeHtml(tracking)}</td></tr>
             <tr><td style="color:#64748b">Transportadora</td><td>${escapeHtml(carrier)}</td></tr>
@@ -1954,7 +1952,7 @@ app.post('/api/alerts/test', async (req, res) => {
     targetOrder,
     event,
     `[TESTE] [MarketOps] ${eventTypeLabelPt(event)} • Pedido ${targetOrder.purchase_order || targetOrder.id}`,
-    message || `Olá, ${targetOrder.customer_name}. Este é um teste: o pedido ${targetOrder.purchase_order || targetOrder.id} foi atualizado para ${eventTypeLabelPt(event)}.`,
+    message || customerMessageForEvent(targetOrder, event),
     recipient_email,
   );
 
