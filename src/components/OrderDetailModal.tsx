@@ -154,6 +154,8 @@ export const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
       setTimeout(() => setAlertSuccessMsg(null), 4000);
     } catch (err: any) {
       console.error(err);
+      setAlertSuccessMsg(pt ? `Falha ao enviar e-mail: ${err?.message || 'erro desconhecido'}` : `Email send failed: ${err?.message || 'unknown error'}`);
+      setTimeout(() => setAlertSuccessMsg(null), 6000);
     }
   };
 

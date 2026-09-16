@@ -567,6 +567,50 @@ const createSmtpTransport = (smtp: ReturnType<typeof smtpSettings>) => nodemaile
   socketTimeout: smtp.connectionTimeout,
 });
 
+const resendSettings = () => {
+  const apiKey = process.env.RESEND_API_KEY?.trim();
+  const from = process.env.RESEND_FROM?.trim() || 'MarketOps <onboarding@resend.dev>';
+  return { apiKey, from, configured: Boolean(apiKey && from) };
+};
+
+const sendWithResend = async (payload: {
+  to: string | string[];
+  subject: string;
+  text?: string;
+  html?: string;
+  cc?: string[];
+  replyTo?: string;
+  attachments?: Array<{ filename: string; content: Buffer }>;
+}) => {
+  const resend = resendSettings();
+  if (!resend.configured) throw new Error('Resend não configurado.');
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${resend.apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from: resend.from,
+      to: Array.isArray(payload.to) ? payload.to : [payload.to],
+      cc: payload.cc?.length ? payload.cc : undefined,
+      reply_to: payload.replyTo || undefined,
+      subject: payload.subject,
+      text: payload.text,
+      html: payload.html,
+      attachments: payload.attachments?.map(file => ({
+        filename: file.filename,
+        content: file.content.toString('base64'),
+      })),
+    }),
+  });
+  const data: any = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data?.message || data?.error || `Resend retornou HTTP ${response.status}`);
+  }
+  return { messageId: data?.id || 'resend-accepted' };
+};
+
 const statusLabelPt = (status: ShipmentData['shipment_status']) => ({
   'Not Shipped': 'Pedido recebido',
   Preparing: 'Preparando envio',
@@ -733,6 +777,7 @@ async function dispatchDeliveryAlert(
   const isReservedDemoAddress = /@example\.(com|org|net)$/i.test(intended);
   const recipient = recipientOverride?.trim() || (isReservedDemoAddress && demoRedirect ? demoRedirect : intended);
   const smtp = smtpSettings();
+  const resend = resendSettings();
 
   if (!recipient || !emailPattern.test(recipient)) {
     alert.status = 'simulated';
@@ -746,28 +791,43 @@ async function dispatchDeliveryAlert(
     return alert;
   }
 
-  if (!smtp.configured) {
+  if (!resend.configured && !smtp.configured) {
     alert.status = 'simulated';
-    alert.delivery_detail = 'SMTP não configurado neste ambiente. O alerta foi registrado, mas não enviado externamente.';
+    alert.delivery_detail = 'Nenhum provedor de e-mail configurado. O alerta foi registrado, mas não enviado externamente.';
     return alert;
   }
 
   try {
-    const transporter = createSmtpTransport(smtp);
-    const info = await transporter.sendMail({
-      from: smtp.from,
-      to: recipient,
-      subject: alert.subject,
-      text: alert.message,
-      html: buildDeliveryAlertHtml(order, eventTypeLabelPt(eventType), alert.message, eventType),
-    });
+    let messageId = '';
+    let provider = '';
+    if (resend.configured) {
+      const info = await sendWithResend({
+        to: recipient,
+        subject: alert.subject,
+        text: alert.message,
+        html: buildDeliveryAlertHtml(order, eventTypeLabelPt(eventType), alert.message, eventType),
+      });
+      messageId = info.messageId;
+      provider = 'Resend';
+    } else {
+      const transporter = createSmtpTransport(smtp);
+      const info = await transporter.sendMail({
+        from: smtp.from,
+        to: recipient,
+        subject: alert.subject,
+        text: alert.message,
+        html: buildDeliveryAlertHtml(order, eventTypeLabelPt(eventType), alert.message, eventType),
+      });
+      messageId = info.messageId;
+      provider = 'SMTP';
+    }
     alert.recipient_email = recipient;
     alert.status = 'sent';
-    alert.delivery_detail = `SMTP aceitou a mensagem (${info.messageId}).`;
+    alert.delivery_detail = `${provider} aceitou a mensagem (${messageId}).`;
     return alert;
   } catch (error: any) {
     alert.status = 'failed';
-    alert.delivery_detail = error?.message || 'Falha desconhecida ao enviar via SMTP.';
+    alert.delivery_detail = error?.message || 'Falha desconhecida ao enviar o e-mail.';
     return alert;
   }
 }
@@ -790,11 +850,12 @@ app.get('/api/health', (req, res) => {
 
 app.get('/api/email/status', (_req, res) => {
   const smtp = smtpSettings();
+  const resend = resendSettings();
   const senderAddress = smtp.from?.match(/<([^>]+)>/)?.[1] || smtp.from || smtp.user || '';
   res.json({
-    configured: smtp.configured,
+    configured: resend.configured || smtp.configured,
     demo_redirect_configured: Boolean(process.env.DEMO_ALERT_RECIPIENT?.trim()),
-    mode: smtp.configured ? 'smtp' : 'log-only',
+    mode: resend.configured ? 'resend' : (smtp.configured ? 'smtp' : 'log-only'),
     allowed_senders: process.env.NODE_ENV !== 'production'
       ? [...new Set([smtp.user, senderAddress, ...(process.env.SMTP_ALLOWED_FROM_ADDRESSES || '').split(/[;,]/)].map(value => value?.trim()).filter(Boolean))]
       : [],
@@ -802,11 +863,15 @@ app.get('/api/email/status', (_req, res) => {
 });
 
 app.post('/api/email/verify', async (_req, res) => {
+  const resend = resendSettings();
+  if (resend.configured) {
+    return res.json({ verified: true, provider: 'resend', message: 'Resend configurado. Faça um alerta de teste para validar o envio.' });
+  }
   const smtp = smtpSettings();
-  if (!smtp.configured) return res.status(503).json({ verified: false, error: 'SMTP não configurado.' });
+  if (!smtp.configured) return res.status(503).json({ verified: false, error: 'Nenhum provedor de e-mail configurado.' });
   try {
     await createSmtpTransport(smtp).verify();
-    res.json({ verified: true, message: 'Conexão e autenticação SMTP verificadas.' });
+    res.json({ verified: true, provider: 'smtp', message: 'Conexão e autenticação SMTP verificadas.' });
   } catch (error: any) {
     res.status(502).json({ verified: false, error: error?.message || 'Falha na verificação SMTP.' });
   }
@@ -1895,7 +1960,7 @@ app.post('/api/alerts/test', async (req, res) => {
 
   res.json({
     success: alert.status !== 'failed',
-    message: alert.status === 'sent' ? 'E-mail de teste enviado via SMTP.' : 'Alerta de teste registrado no histórico.',
+    message: alert.status === 'sent' ? 'E-mail de teste enviado.' : 'Alerta de teste registrado no histórico.',
     alert
   });
 });
