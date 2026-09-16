@@ -109,6 +109,12 @@ export const DashboardStats: React.FC<DashboardStatsProps> = ({
     },
   ];
 
+  const databricksSource = stats.databricks_sync_status.table;
+  const isDatabricksActive = ![
+    'public.orders + public.order_items + public.logistics',
+    'synthetic demo dataset',
+  ].includes(databricksSource);
+
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -135,7 +141,7 @@ export const DashboardStats: React.FC<DashboardStatsProps> = ({
                     {card.label}
                   </p>
                   <p
-                    className={`mt-4 max-w-full font-bold tracking-tight text-slate-950 tabular-nums ${
+                    className={`mt-4 max-w-full font-bold tracking-tight text-slate-950 dark:text-slate-50 tabular-nums ${
                       isRevenue
                         ? 'whitespace-nowrap text-[clamp(1.55rem,2.4vw,2.15rem)]'
                         : 'text-[clamp(2rem,3vw,2.5rem)] leading-none'
@@ -169,9 +175,9 @@ export const DashboardStats: React.FC<DashboardStatsProps> = ({
             <code className="rounded border border-slate-200 bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-slate-800">
               {stats.databricks_sync_status.table}
             </code>
-            <span className={`ml-2 font-semibold ${stats.databricks_sync_status.table.includes('orders_live') ? 'text-emerald-700' : 'text-amber-700'}`}>
-              {stats.databricks_sync_status.table.includes('orders_live')
-                ? (pt ? 'Databricks: sincronização ativa' : 'Databricks: live sync')
+            <span className={`ml-2 font-semibold ${isDatabricksActive ? 'text-emerald-700' : 'text-amber-700'}`}>
+              {isDatabricksActive
+                ? (pt ? 'Databricks: conectado' : 'Databricks: connected')
                 : (pt ? 'Databricks: aguardando configuração' : 'Databricks: awaiting setup')}
             </span>
           </div>
