@@ -30,6 +30,9 @@ export interface Order {
   customer_email: string;
   customer_phone?: string;
   customer_cpf?: string;
+  customer_address?: string;
+  customer_city?: string;
+  customer_state?: string;
   sku: string;
   product_name: string; // description or name of product
   asin: string; // Amazon Standard Identification Number
@@ -73,9 +76,25 @@ export interface Order {
   marketplace_purchase_confirmed_at?: string;
   cancellation_reason?: string;
   cancellation_updated_at?: string;
+  forecast?: LogisticsForecast;
   // All unique product lines that belong to the same customer order / PO.
   // The first item is also used as the order summary in list views.
   items?: Order[];
+}
+
+export interface LogisticsForecast {
+  calculated_at: string;
+  method: 'rolling-business-days-v1';
+  current_stage: string;
+  expected_wr_date?: string;
+  expected_etd_date?: string;
+  expected_eta_date?: string;
+  expected_entry_cd_date?: string;
+  expected_billing_date?: string;
+  expected_delivery_date?: string;
+  next_stage?: string;
+  next_stage_date?: string;
+  customer_delivery_commitment_date?: string;
 }
 
 export interface DeliveryAlert {

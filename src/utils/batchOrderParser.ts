@@ -20,6 +20,9 @@ export interface ParsedBatchOrder {
   customer_email?: string;
   customer_phone?: string;
   customer_cpf?: string;
+  customer_address?: string;
+  customer_city?: string;
+  customer_state?: string;
   invoice?: string;
   wr_date?: string;
   eta?: string;
@@ -220,6 +223,9 @@ export function parseBatchOrderText(
   let colCustomerEmail = -1;
   let colCustomerPhone = -1;
   let colCustomerCpf = -1;
+  let colCustomerAddress = -1;
+  let colCustomerCity = -1;
+  let colCustomerState = -1;
 
   if (isHeaderRow) {
     headers.forEach((h, idx) => {
@@ -230,6 +236,9 @@ export function parseBatchOrderText(
       if (h === 'eta') { colEta = idx; return; }
       if (h === 'etd') { colEtd = idx; return; }
       if (h === 'cpf' || h.includes('cpf')) { colCustomerCpf = idx; return; }
+      if (h.includes('endereço') || h.includes('endereco') || h.includes('address')) { colCustomerAddress = idx; return; }
+      if (h === 'cidade' || h.includes('customer city')) { colCustomerCity = idx; return; }
+      if (h === 'uf' || h === 'estado' || h.includes('customer state')) { colCustomerState = idx; return; }
       if (h === 'email' || h.includes('e-mail')) { colCustomerEmail = idx; return; }
       if (h.includes('telefone') || h.includes('phone')) { colCustomerPhone = idx; return; }
       if (h === 'billing_date' || h.includes('data de faturamento') || h.includes('faturamento')) { colBillingDate = idx; return; }
@@ -345,6 +354,9 @@ export function parseBatchOrderText(
     const rawCustomerEmail = colCustomerEmail >= 0 && cols[colCustomerEmail] !== undefined ? cols[colCustomerEmail] : '';
     const rawCustomerPhone = colCustomerPhone >= 0 && cols[colCustomerPhone] !== undefined ? cols[colCustomerPhone] : '';
     const rawCustomerCpf = colCustomerCpf >= 0 && cols[colCustomerCpf] !== undefined ? cols[colCustomerCpf] : '';
+    const rawCustomerAddress = colCustomerAddress >= 0 && cols[colCustomerAddress] !== undefined ? cols[colCustomerAddress] : '';
+    const rawCustomerCity = colCustomerCity >= 0 && cols[colCustomerCity] !== undefined ? cols[colCustomerCity] : '';
+    const rawCustomerState = colCustomerState >= 0 && cols[colCustomerState] !== undefined ? cols[colCustomerState] : '';
 
     // Status mapping
     const mapped = mapStsCompra(rawStsCompra, defaultStatus);
@@ -456,6 +468,9 @@ export function parseBatchOrderText(
       customer_email: rawCustomerEmail || undefined,
       customer_phone: rawCustomerPhone || undefined,
       customer_cpf: rawCustomerCpf || undefined,
+      customer_address: rawCustomerAddress || undefined,
+      customer_city: rawCustomerCity || undefined,
+      customer_state: rawCustomerState || undefined,
       invoice: rawInvoice || undefined,
       wr_date: rawWrDate ? normalizeDate(rawWrDate) : undefined,
       eta: rawEta ? normalizeDate(rawEta) : undefined,

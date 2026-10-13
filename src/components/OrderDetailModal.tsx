@@ -73,6 +73,7 @@ export const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
     setCancellingOrder(false);
     setRestoringCancellation(false);
     setActionError('');
+    setOrderNotes(order?.notes || '');
   }, [order?.id, order?.cancellation_reason]);
 
   useEffect(() => {
@@ -126,6 +127,14 @@ export const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
     { label: pt ? 'Saiu para entrega' : 'Out for delivery', date: latestDate(item => item.billing_date), detail: pt ? 'Pedido faturado e liberado para entrega.' : 'Order invoiced and released for delivery.' },
     { label: pt ? 'Entregue' : 'Delivered', date: latestDate(item => item.delivery_client_date), detail: pt ? 'Entrega final ao cliente.' : 'Final delivery to the customer.' },
   ].filter((milestone): milestone is { label: string; date: string; detail: string } => Boolean(milestone.date));
+  const forecastStageLabels: Record<string, string> = {
+    warehouse_received: pt ? 'Chegada na warehouse' : 'Warehouse arrival',
+    dispatched: pt ? 'Pedido enviado (ETD)' : 'Order sent (ETD)',
+    manaus_arrival: pt ? 'Chegada em Manaus (ETA)' : 'Manaus arrival (ETA)',
+    distribution_center: pt ? 'Entrada no centro de distribuição' : 'Distribution center arrival',
+    billed: pt ? 'Faturamento e saída para entrega' : 'Billing and out for delivery',
+    delivered: pt ? 'Entrega ao cliente' : 'Customer delivery',
+  };
 
   const shipmentStatusLabel = (status: Order['shipment']['shipment_status']) => {
     if (!pt) return status;
@@ -251,6 +260,25 @@ export const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
 
         {/* Modal Content Scrollable */}
         <div className="p-6 space-y-6 overflow-y-auto flex-1">
+          {order.forecast && order.status !== 'Delivered' && order.status !== 'Cancelled' && (
+            <section className="rounded-2xl border border-indigo-200 bg-gradient-to-r from-indigo-50 via-blue-50 to-cyan-50 p-5">
+              <div className="mb-3 flex items-center gap-2">
+                <Calendar className="h-5 w-5 text-indigo-600" />
+                <h3 className="text-sm font-bold text-slate-900">{pt ? 'Previsões logísticas' : 'Logistics forecasts'}</h3>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-xl border border-indigo-100 bg-white/90 p-4">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-indigo-600">{pt ? 'Próxima etapa prevista' : 'Next expected stage'}</p>
+                  <p className="mt-1 text-sm font-bold text-slate-900">{forecastStageLabels[order.forecast.next_stage || ''] || order.forecast.next_stage || '—'}</p>
+                  <p className="mt-1 font-mono text-lg font-black text-indigo-700">{order.forecast.next_stage_date ? formatTrackingDate(order.forecast.next_stage_date) : '—'}</p>
+                </div>
+                <div className="rounded-xl border border-emerald-100 bg-white/90 p-4">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">{pt ? 'Previsão de entrega para comunicação ao cliente' : 'Customer-facing delivery estimate'}</p>
+                  <p className="mt-1 font-mono text-lg font-black text-emerald-700">{order.forecast.customer_delivery_commitment_date ? formatTrackingDate(order.forecast.customer_delivery_commitment_date) : '—'}</p>
+                </div>
+              </div>
+            </section>
+          )}
           {/* Section 1: Customer & Product Info (2 columns) */}
           <div className="space-y-4">
             {/* Customer Box */}

@@ -2,6 +2,8 @@ import React from 'react';
 import {
   Package,
   Clock3,
+  Clock,
+  Truck,
   ReceiptText,
   CheckCircle2,
   XCircle,
@@ -23,10 +25,14 @@ type StatCard = {
   id: string;
   label: string;
   value: string;
-  description: string;
+  description?: string;
   filterValue: string;
   icon: LucideIcon;
   iconClass: string;
+  color: string;
+  badgeText?: string;
+  badgeClass?: string;
+  subtitle?: string;
 };
 
 export const DashboardStats: React.FC<DashboardStatsProps> = ({
@@ -59,35 +65,46 @@ export const DashboardStats: React.FC<DashboardStatsProps> = ({
       value: stats.total_orders.toLocaleString('pt-BR'),
       description: pt ? 'Pedidos nos filtros atuais' : 'Orders in the current filters',
       filterValue: 'All',
+      color: 'text-slate-900',
       icon: Package,
-      iconClass: 'bg-indigo-50 text-indigo-600 ring-indigo-100',
+      iconClass: 'bg-indigo-50 text-indigo-600',
+      subtitle: pt ? 'Pedidos considerando os filtros atuais' : 'Orders in the current filters',
     },
     {
       id: 'stat-pending',
       label: pt ? 'Pendentes' : 'Pending',
-      value: stats.pending_orders.toLocaleString('pt-BR'),
-      description: pt ? 'Aguardando avanço operacional' : 'Waiting for operational progress',
+      value: stats.pending_orders.toLocaleString(),
+      badgeText: pt ? 'Crítico' : 'Critical',
+      badgeClass: 'text-amber-500 font-bold bg-amber-50 px-2 py-0.5 rounded text-xs',
       filterValue: 'Pending',
-      icon: Clock3,
-      iconClass: 'bg-amber-50 text-amber-600 ring-amber-100',
+      color: 'text-slate-900',
+      icon: Clock,
+      iconClass: 'bg-amber-50 text-amber-600',
+      subtitle: pt ? 'Aguardando avanço operacional' : 'Awaiting operational progress',
     },
     {
       id: 'stat-in-transit',
       label: pt ? 'Em trânsito' : 'In Transit',
-      value: stats.shipped_orders.toLocaleString('pt-BR'),
-      description: pt ? 'Com invoice e ainda não entregues' : 'Invoiced and not yet delivered',
+      value: stats.shipped_orders.toLocaleString(),
+      badgeText: pt ? 'Com invoice' : 'With invoice',
+      badgeClass: 'text-blue-600 font-bold bg-blue-50 px-2 py-0.5 rounded text-xs',
       filterValue: 'Shipped',
-      icon: ReceiptText,
-      iconClass: 'bg-blue-50 text-blue-600 ring-blue-100',
+      color: 'text-blue-600',
+      icon: Truck,
+      iconClass: 'bg-blue-50 text-blue-600',
+      subtitle: pt ? 'Pedidos abertos que já possuem invoice' : 'Open orders that already have an invoice',
     },
     {
       id: 'stat-delivered',
       label: pt ? 'Entregues' : 'Delivered',
-      value: stats.delivered_orders.toLocaleString('pt-BR'),
-      description: pt ? `${deliveryRate}% dos pedidos` : `${deliveryRate}% of orders`,
+      value: stats.delivered_orders.toLocaleString(),
+      badgeText: pt ? `${deliveryRate} entregues` : `${deliveryRate} Rate`,
+      badgeClass: 'text-slate-500 text-xs font-medium',
       filterValue: 'Delivered',
+      color: 'text-blue-600',
       icon: CheckCircle2,
-      iconClass: 'bg-emerald-50 text-emerald-600 ring-emerald-100',
+      iconClass: 'bg-emerald-50 text-emerald-600',
+      subtitle: pt ? 'Pedidos entregues ao cliente' : 'Orders delivered to customers',
     },
     {
       id: 'stat-cancelled',
@@ -95,8 +112,10 @@ export const DashboardStats: React.FC<DashboardStatsProps> = ({
       value: stats.cancelled_orders.toLocaleString('pt-BR'),
       description: pt ? `${cancellationRate}% dos pedidos` : `${cancellationRate}% of orders`,
       filterValue: 'Cancelled',
+      color: 'text-red-500',
       icon: XCircle,
-      iconClass: 'bg-rose-50 text-rose-600 ring-rose-100',
+      iconClass: 'bg-rose-50 text-rose-600',
+      subtitle: pt ? 'Pedidos cancelados nos filtros atuais' : 'Cancelled orders in current filters',
     },
     {
       id: 'stat-revenue',
@@ -104,9 +123,11 @@ export const DashboardStats: React.FC<DashboardStatsProps> = ({
       value: revenueBrl,
       description: pt ? 'Valor total vendido nos filtros atuais' : 'Total sales in the current filters',
       filterValue: 'All',
+      color: 'text-slate-900',
       icon: DollarSign,
-      iconClass: 'bg-emerald-50 text-emerald-600 ring-emerald-100',
-    },
+      iconClass: 'bg-emerald-50 text-emerald-600',
+      subtitle: pt ? 'Valor total gasto pelos clientes' : 'Total amount spent by customers',
+    }
   ];
 
   const databricksSource = stats.databricks_sync_status.table;
@@ -117,11 +138,12 @@ export const DashboardStats: React.FC<DashboardStatsProps> = ({
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+      {/* Sleek KPI Cards Grid */}
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-4">
         {statCards.map((card) => {
           const Icon = card.icon;
           const isSelected = activeStatusFilter === card.filterValue && card.filterValue !== 'All';
-          const isRevenue = card.id === 'stat-revenue';
+          const CardIcon = card.icon;
 
           return (
             <button
@@ -129,34 +151,24 @@ export const DashboardStats: React.FC<DashboardStatsProps> = ({
               id={card.id}
               type="button"
               onClick={() => onSelectStatus(card.filterValue)}
-              className={`group relative min-w-0 overflow-hidden rounded-2xl border bg-white p-5 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md sm:p-6 ${
-                isSelected
-                  ? 'border-blue-400 ring-2 ring-blue-500/15 shadow-md'
-                  : 'border-slate-200/90 hover:border-slate-300'
+              className={`relative min-h-40 min-w-0 overflow-hidden rounded-2xl border bg-white p-5 text-left shadow-sm transition-all duration-300 group ${
+                isSelected 
+                  ? 'border-blue-500 ring-2 ring-blue-500/20 shadow-md' 
+                  : 'border-slate-200/80 hover:border-slate-300 hover:shadow-md'
               }`}
             >
-              <div className="flex min-w-0 items-start justify-between gap-4">
-                <div className="min-w-0 flex-1">
-                  <p className="text-[11px] font-bold uppercase tracking-[0.08em] text-slate-500 sm:text-xs">
-                    {card.label}
-                  </p>
-                  <p
-                    className={`mt-4 max-w-full font-bold tracking-tight text-slate-950 dark:text-slate-50 tabular-nums ${
-                      isRevenue
-                        ? 'whitespace-nowrap text-[clamp(1.55rem,2.4vw,2.15rem)]'
-                        : 'text-[clamp(2rem,3vw,2.5rem)] leading-none'
-                    }`}
-                  >
-                    {card.value}
-                  </p>
-                  <p className="mt-2 text-xs font-medium leading-5 text-slate-500 sm:text-sm">
-                    {card.description}
-                  </p>
-                </div>
-
-                <span className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ring-1 ${card.iconClass}`}>
-                  <Icon className="h-5 w-5" strokeWidth={2} />
+              <div className="mb-4 flex items-start justify-between gap-3">
+                <p className="pt-1 text-xs font-bold uppercase tracking-[0.08em] text-slate-500">{card.label}</p>
+                <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${card.iconClass}`}><CardIcon className="h-5 w-5" /></span>
+              </div>
+              <div className="flex min-w-0 flex-col items-start gap-1.5">
+                <h3 className={`marketops-kpi-value max-w-full leading-none font-black tracking-tight tabular-nums ${card.id === 'stat-revenue' ? 'whitespace-nowrap text-[clamp(1.3rem,2.2vw,1.85rem)]' : 'break-words text-[clamp(1.55rem,2.6vw,2rem)]'} ${card.color}`}>
+                  {card.value}
+                </h3>
+                <span className={`max-w-full whitespace-normal break-words leading-snug ${card.badgeClass}`}>
+                  {card.badgeText}
                 </span>
+                <p className="mt-1 text-[11px] leading-4 text-slate-500">{card.subtitle}</p>
               </div>
 
               {isSelected && (
@@ -167,32 +179,28 @@ export const DashboardStats: React.FC<DashboardStatsProps> = ({
         })}
       </div>
 
-      <div className="flex flex-col items-start justify-between gap-3 rounded-2xl border border-slate-200/80 bg-white px-5 py-3.5 text-xs text-slate-600 shadow-xs sm:flex-row sm:items-center">
+      {/* Current source + future Databricks architecture */}
+      <div className="bg-white rounded-2xl border border-slate-200/80 p-3.5 px-5 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs text-slate-600">
         <div className="flex items-center gap-2.5">
-          <div className="h-2.5 w-2.5 rounded-full bg-blue-500" />
+          <div className="w-2.5 h-2.5 rounded-full bg-blue-500" />
           <div>
-            <span className="font-semibold text-slate-800">{pt ? 'Fonte operacional atual:' : 'Current operational source:'}</span>{' '}
-            <code className="rounded border border-slate-200 bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-slate-800">
+            <span className="font-semibold text-slate-800">{pt?'Fonte operacional atual:':'Current operational source:'}</span>{' '}
+            <code className="font-mono bg-slate-100 text-slate-800 px-1.5 py-0.5 rounded font-semibold text-[11px] border border-slate-200">
               {stats.databricks_sync_status.table}
             </code>
-            <span className={`ml-2 font-semibold ${isDatabricksActive ? 'text-emerald-700' : 'text-amber-700'}`}>
-              {isDatabricksActive
-                ? (pt ? 'Databricks: conectado' : 'Databricks: connected')
-                : (pt ? 'Databricks: aguardando configuração' : 'Databricks: awaiting setup')}
-            </span>
+            <span className="ml-2 text-amber-700 font-semibold">{pt?'Databricks: integração futura':'Databricks: future integration'}</span>
           </div>
         </div>
         <div className="flex items-center gap-4 self-end sm:self-center">
           <span className="text-slate-500">
-            {pt ? 'Última atualização:' : 'Last refresh:'}{' '}
-            <span className="font-mono font-medium text-slate-700">{stats.databricks_sync_status.last_sync}</span>
+            {pt?'Última atualização:':'Last refresh:'} <span className="font-mono text-slate-700 font-medium">{stats.databricks_sync_status.last_sync}</span>
           </span>
           <button
             id="btn-view-databricks-schema"
             onClick={onOpenDatabricksModal}
             className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-700 hover:underline"
           >
-            {pt ? 'Como integrar' : 'How to integrate'} <ArrowUpRight className="h-3.5 w-3.5" />
+            {pt?'Como integrar':'How to integrate'} <ArrowUpRight className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>

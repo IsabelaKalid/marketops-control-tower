@@ -115,6 +115,14 @@ html.dark {
   --chart-card: #182235;
 }
 
+/* KPI values must never inherit opacity/text-fill from animated card layers. */
+.marketops-kpi-value {
+  opacity: 1 !important;
+  -webkit-text-fill-color: currentColor;
+  position: relative;
+  z-index: 1;
+}
+
 /* Extra contrast coverage for translucent cards used by modals, reports and alerts. */
 .dark .bg-slate-50\/60,
 .dark .bg-slate-50\/70,
