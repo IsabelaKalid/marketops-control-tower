@@ -262,6 +262,8 @@ const groupOrders = (source: Order[]): Order[] => {
     const hasVkp2 = sortedItems.some((item) => item.vkp2_price !== undefined);
     const purchaseConfirmed = sortedItems.every(item => item.marketplace_purchase_confirmed === true);
     const purchaseConfirmationDates = sortedItems.map(item => item.marketplace_purchase_confirmed_at).filter((value): value is string => Boolean(value)).sort();
+    const latestItemDate = (read: (item: Order) => string | undefined) =>
+      sortedItems.map(read).filter((value): value is string => Boolean(value)).sort().at(-1);
     const activeItems = sortedItems.filter(item => item.status !== 'Cancelled');
     const groupedStatus: Order['status'] = activeItems.length === 0
       ? 'Cancelled'
@@ -270,7 +272,7 @@ const groupOrders = (source: Order[]): Order[] => {
         : activeItems.some(item => item.status === 'Shipped' || Boolean(item.invoice || item.wr_date || item.etd || item.eta || item.di_date || item.entry_cd_date))
           ? 'Shipped'
           : 'Pending';
-    return {
+    const groupedOrder: Order = {
       ...summary,
       id: summary.purchase_order || summary.customer_order_id || summary.id,
       quantity: sortedItems.reduce((sum, item) => sum + item.quantity, 0),
@@ -295,6 +297,23 @@ const groupOrders = (source: Order[]): Order[] => {
       },
       items: sortedItems,
     };
+    const forecastInput: Order = {
+      ...groupedOrder,
+      marketplace_purchase_confirmed_at: latestItemDate(item => item.marketplace_purchase_confirmed_at) || groupedOrder.marketplace_purchase_confirmed_at,
+      wr_date: latestItemDate(item => item.wr_date),
+      etd: latestItemDate(item => item.etd),
+      eta: latestItemDate(item => item.eta),
+      di_date: latestItemDate(item => item.di_date),
+      customs_release_date: latestItemDate(item => item.customs_release_date),
+      entry_cd_date: latestItemDate(item => item.entry_cd_date),
+      billing_date: latestItemDate(item => item.billing_date),
+      delivery_client_date: latestItemDate(item => item.delivery_client_date),
+    };
+    groupedOrder.forecast = calculateRollingForecast(forecastInput);
+    if (!groupedOrder.shipment.estimated_delivery && groupedOrder.forecast.customer_delivery_commitment_date) {
+      groupedOrder.shipment.estimated_delivery = groupedOrder.forecast.customer_delivery_commitment_date;
+    }
+    return groupedOrder;
   });
 };
 
