@@ -409,8 +409,16 @@ const refreshDatabricksIfDue = async (force = false) => {
   databricksPullPromise = (async () => {
     try {
       const sourceItems = await loadOrdersFromDatabricks();
+      // Keep the previous lifecycle state before replacing it with the latest
+      // Databricks snapshot. This lets the regular poll detect changed dates
+      // and notify customers without a separate Databricks webhook call.
+      const previousLifecycleByGroup = new Map<string, LifecycleSnapshot>();
+      for (const groupedOrder of groupOrders(orders)) {
+        previousLifecycleByGroup.set(orderGroupKey(groupedOrder), lifecycleSnapshot(groupedOrder));
+      }
       const currentByKey = new Map(orders.map(item => [databricksLineKey(item), item] as const));
       const mergedSourceItems = sourceItems.map(item => mergeDatabricksItem(item, currentByKey.get(databricksLineKey(item))));
+      const synchronizedGroupKeys = new Set<string>(mergedSourceItems.map(item => orderGroupKey(item)));
 
       if (activeDataSource === 'postgres') {
         await insertOrdersToPostgres(mergedSourceItems);
@@ -419,6 +427,18 @@ const refreshDatabricksIfDue = async (force = false) => {
         const sourceKeys = new Set(mergedSourceItems.map(databricksLineKey));
         const localOnly = orders.filter(item => !sourceKeys.has(databricksLineKey(item)));
         orders = applyDemoContactDefaults(deduplicateOrderLines([...mergedSourceItems, ...localOnly]));
+      }
+
+      const updatedGroups = new Map(groupOrders(orders).map(order => [orderGroupKey(order), order] as const));
+      for (const groupKey of synchronizedGroupKeys) {
+        const before = previousLifecycleByGroup.get(groupKey);
+        const after = updatedGroups.get(groupKey);
+        if (!before || !after) continue;
+
+        for (const event of lifecycleAlerts(before, lifecycleSnapshot(after), after)) {
+          const alert = await dispatchDeliveryAlert(after, event.type, event.subject, event.message);
+          console.log(`Databricks lifecycle notification ${alert.status} for PO ${after.purchase_order || after.id}: ${event.type}.`);
+        }
       }
 
       lastDatabricksPullAt = Date.now();
@@ -666,11 +686,11 @@ const lifecycleAlerts = (before: LifecycleSnapshot, after: LifecycleSnapshot, or
   const changed = (key: keyof LifecycleSnapshot) => Boolean(after[key]) && after[key] !== before[key];
   const events: Array<{ type: DeliveryAlert['event_type']; subject: string; message: string }> = [];
   if (changed('purchase')) events.push({ type: 'Order Placed', subject: `[MarketOps] Compra confirmada · Pedido ${po}`, message: `A compra dos produtos do pedido ${po} foi confirmada e o envio está sendo preparado.` });
-  if (changed('etd')) events.push({ type: 'Shipment Dispatched', subject: `[MarketOps] Pedido enviado · ${po}`, message: `O pedido ${po} saiu da warehouse em ${after.etd.slice(0, 10)} e está a caminho de Manaus.` });
-  if (changed('eta')) events.push({ type: 'In Transit', subject: `[MarketOps] Pedido chegou em Manaus · ${po}`, message: `O pedido ${po} chegou em Manaus em ${after.eta.slice(0, 10)} e seguirá para as próximas etapas logísticas.` });
-  if (changed('entryCd')) events.push({ type: 'In Transit', subject: `[MarketOps] Pedido recebido no centro de distribuição · ${po}`, message: `O pedido ${po} entrou no centro de distribuição em ${after.entryCd.slice(0, 10)}.` });
-  if (changed('billing')) events.push({ type: 'Out for Delivery', subject: `[MarketOps] Pedido saiu para entrega · ${po}`, message: `O pedido ${po} foi faturado em ${after.billing.slice(0, 10)} e saiu para entrega ao cliente.` });
-  if (changed('delivery')) events.push({ type: 'Delivered', subject: `[MarketOps] Pedido entregue · ${po}`, message: `O pedido ${po} foi entregue ao cliente em ${after.delivery.slice(0, 10)}.` });
+  if (changed('etd')) events.push({ type: 'Shipment Dispatched', subject: `[MarketOps] Previsão de embarque atualizada · ${po}`, message: `A previsão de saída da warehouse do pedido ${po} foi atualizada para ${after.etd.slice(0, 10)}.` });
+  if (changed('eta')) events.push({ type: 'In Transit', subject: `[MarketOps] Previsão logística atualizada · ${po}`, message: `A previsão de chegada do pedido ${po} em Manaus foi atualizada para ${after.eta.slice(0, 10)}.` });
+  if (changed('entryCd')) events.push({ type: 'In Transit', subject: `[MarketOps] Previsão logística atualizada · ${po}`, message: `A previsão de entrada do pedido ${po} no centro de distribuição foi atualizada para ${after.entryCd.slice(0, 10)}.` });
+  if (changed('billing')) events.push({ type: 'Out for Delivery', subject: `[MarketOps] Previsão logística atualizada · ${po}`, message: `A previsão de faturamento do pedido ${po} foi atualizada para ${after.billing.slice(0, 10)}.` });
+  if (changed('delivery')) events.push({ type: 'Delivered', subject: `[MarketOps] Previsão de entrega atualizada · ${po}`, message: `A previsão de entrega ao cliente do pedido ${po} foi atualizada para ${after.delivery.slice(0, 10)}.` });
   if (changed('cancelled')) events.push({ type: 'Cancelled', subject: `[MarketOps] Pedido cancelado · ${po}`, message: `O pedido ${po} foi cancelado. Motivo: ${order.cancellation_reason || 'não informado'}.` });
   return events;
 };
