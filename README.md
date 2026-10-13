@@ -49,6 +49,7 @@ The public version uses a PostgreSQL database populated exclusively with synthet
 - Pagination and responsive layouts
 - Individual and bulk purchase confirmation
 - Individual and bulk order cancellation
+- Cancellation reversal with audit history preserved
 - Confirmation safeguards before cancelling orders
 - Purchase-confirmation and cancellation history
 - International logistics tracking timeline
@@ -61,8 +62,10 @@ The public version uses a PostgreSQL database populated exclusively with synthet
 - Excel batch import
 - Filtered Excel export
 - Email reports with KPIs, charts and spreadsheet attachments
+- Automatic customer delivery emails when shipment status changes
+- Recent delivery-alert log with sent / simulated / failed state
 - Independent English and Portuguese controls
-- Light and dark themes
+- Light and dark themes with system-theme detection and improved contrast
 - PostgreSQL persistence
 - Supabase email and password authentication
 - Guest read-only demonstration mode
@@ -167,7 +170,7 @@ http://localhost:3000/api/health
 
 1. Create a PostgreSQL or Supabase project.
 2. Run `database/001_schema.sql`.
-3. For an existing database, run `database/003_operational_write_compatibility.sql` to ensure the write and history columns are compatible.
+3. For an existing database, run `database/003_operational_write_compatibility.sql` and `database/004_customer_alert_contacts.sql` to ensure write/history/contact columns are compatible.
 4. Run the files inside `database/seed_chunks/` in numerical order when loading the demonstration dataset.
 5. Run `database/seed_chunks/99_validate.sql`.
 6. Configure `.env.local`:
@@ -236,7 +239,9 @@ VITE_SUPABASE_PUBLISHABLE_KEY
 
 `VITE_SUPABASE_PUBLISHABLE_KEY` is intended for browser use. Database credentials and secret or service-role keys must remain restricted to the server environment.
 
-Optional email configuration:
+### Email delivery on Render
+
+Reports and delivery alerts use the same SMTP configuration. Add these values in **Render > Environment** (not only in `.env.local`):
 
 ```text
 SMTP_HOST
@@ -245,9 +250,48 @@ SMTP_SECURE
 SMTP_USER
 SMTP_PASSWORD
 SMTP_FROM
+SMTP_CONNECTION_TIMEOUT_MS
+APP_URL
 ```
 
-Databricks environment variables should only be configured when that integration becomes available.
+For a safe portfolio demonstration, synthetic customers use reserved `@example.com` addresses. Set `DEMO_ALERT_RECIPIENT` to your own real test mailbox if you want those synthetic alerts to be redirected to you. A manually entered test recipient in the Alerts drawer also works.
+
+If you use Gmail SMTP, use an App Password rather than your normal account password. Keep it only in the hosting provider's protected environment variables.
+
+For Gmail, use `smtp.gmail.com`, port `587`, and `SMTP_SECURE=false`. The API also exposes an authenticated `POST /api/email/verify` check that validates the SMTP connection without sending a message.
+
+### Databricks: current state vs. future integration
+
+Databricks is **not connected live in the public demo**. The current `sync` actions are deliberately presented as a reconciliation demonstration using the logistics fields already available in MarketOps.
+
+The project now exposes `POST /api/databricks/reconcile` as the future integration contract. A corporate Databricks Job/Workflow can send changed shipment rows to this endpoint using `DATABRICKS_WEBHOOK_SECRET`, or the backend can later query a Databricks SQL Warehouse using:
+
+```text
+DATABRICKS_HOST
+DATABRICKS_TOKEN
+DATABRICKS_HTTP_PATH
+DATABRICKS_WEBHOOK_SECRET
+```
+
+A proposed production flow is:
+
+```text
+Corporate systems / carrier APIs
+        -> Databricks Delta / Gold table
+        -> changed shipment rows
+        -> MarketOps /api/databricks/reconcile
+        -> PostgreSQL status update
+        -> automatic customer email
+        -> recent alert history
+```
+
+Customer emails contain their own visual tracking timeline and never link to the internal MarketOps dashboard. The Alerts drawer also supports date-based batch processing for local validation; production reconciliation sends the appropriate status automatically as each changed Databricks record arrives.
+
+The customer timeline follows the operational dates instead of a generic shipment status: `date_order` (registered), `marketplace_purchase_confirmed_at` (preparing), `etd` (sent from warehouse), `eta` (arrived in Manaus), `entry_cd_date` (distribution center), `billing_date` (out for delivery) and `delivery_client_date` (delivered). Cancelled orders use `cancellation_reason` in a separate message. Test data may include a clearly identified fictional `customer_cpf`, which is displayed in the customer email together with email and phone contact fields.
+
+The suggested table name `gold_logistics.marketplace_shipments` is an architecture proposal only; the application does not claim that this table already exists in a company workspace.
+
+For an existing PostgreSQL/Supabase installation, apply `database/005_customer_tracking_fields.sql` before importing the revised Databricks test workbook. The workbook includes a `Dicionario_Databricks` sheet describing each source-to-email milestone mapping.
 
 Render supplies the `PORT` environment variable automatically.
 

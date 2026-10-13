@@ -87,12 +87,12 @@ export const Header: React.FC<HeaderProps> = ({
         <button
           id="btn-databricks-status"
           onClick={onOpenDatabricksModal}
-          title="Databricks Delta Lake Logistics status"
+          title={language === 'pt' ? 'Ver integração com Databricks' : 'View Databricks integration'}
           className="hidden xl:flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 border border-slate-200 transition-colors"
         >
           <Database className="w-3.5 h-3.5 text-amber-600" />
-          <span>Databricks: <span className="font-mono text-slate-900 font-semibold">gold_logistics</span></span>
-          <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+          <span>{language === 'pt' ? 'Databricks Sync' : 'Databricks Sync'}</span>
+          <span className="w-2 h-2 rounded-full bg-emerald-500" />
         </button>
 
         {/* Sync Databricks Action */}
@@ -110,7 +110,7 @@ export const Header: React.FC<HeaderProps> = ({
         )}
 
         {/* Send Multiple Orders (Batch Import) Button */}
-        {onOpenBatchImport && (
+        {canManageOrders && onOpenBatchImport && (
           <button
             id="btn-send-multiple-orders"
             onClick={onOpenBatchImport}
@@ -124,7 +124,7 @@ export const Header: React.FC<HeaderProps> = ({
         )}
 
         {/* Insert New Order Button */}
-        <button
+        {canManageOrders && <button
           id="btn-insert-new-order"
           onClick={onOpenNewOrder}
           className="bg-blue-600 hover:bg-blue-700 text-white px-3 sm:px-3.5 py-2 rounded-lg text-xs sm:text-sm font-semibold flex items-center gap-1.5 shadow-xs transition-all"
@@ -132,7 +132,7 @@ export const Header: React.FC<HeaderProps> = ({
           <Plus className="w-4 h-4" />
           <span className="whitespace-nowrap hidden md:inline">{language==='pt'?'Inserir novo pedido':'Insert New Order'}</span>
           <span className="whitespace-nowrap md:hidden">New</span>
-        </button>
+        </button>}
 
         {/* Notification Bell with Sleek Red Dot */}
         <button

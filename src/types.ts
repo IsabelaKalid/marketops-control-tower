@@ -1,6 +1,6 @@
 export type OrderStatus = 'Pending' | 'Processing' | 'Shipped' | 'Delivered' | 'Cancelled';
 
-export type ShipmentStatus = 'Not Shipped' | 'Preparing' | 'In Transit' | 'Out for Delivery' | 'Delivered' | 'Returned' | 'Cancelled';
+export type ShipmentStatus = 'Not Shipped' | 'Preparing' | 'In Transit' | 'At Distribution Center' | 'Out for Delivery' | 'Delivered' | 'Returned' | 'Cancelled';
 
 export interface ShipmentEvent {
   id: string;
@@ -29,6 +29,7 @@ export interface Order {
   customer_name: string;
   customer_email: string;
   customer_phone?: string;
+  customer_cpf?: string;
   sku: string;
   product_name: string; // description or name of product
   asin: string; // Amazon Standard Identification Number
@@ -52,6 +53,7 @@ export interface Order {
   destination_hub?: string; // CD Marketplace - Manaus, AM
   delivery_client_date?: string; // Data Entrega Cliente Marketplace
   entry_cd_date?: string; // Entrada no CD / faturamento para entrega ao cliente
+  billing_date?: string; // Data de faturamento / saída para entrega
   sequencial?: string; // Sequencial
   sts_compra?: string; // Sts de Compra (ENTREGUE, CANCELADO, COMPRADO)
   unit_measure?: string;
@@ -86,8 +88,12 @@ export interface DeliveryAlert {
   subject: string;
   message: string;
   timestamp: string;
-  status: 'sent' | 'delivered';
+  status: 'queued' | 'sent' | 'delivered' | 'simulated' | 'failed';
+  intended_email?: string;
+  recipient_phone?: string;
+  delivery_detail?: string;
 }
+
 
 export interface DashboardStats {
   total_orders: number;

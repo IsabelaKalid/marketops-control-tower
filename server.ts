@@ -16,8 +16,10 @@ import {
   saveCancellationToPostgres,
   restoreCancellationInPostgres,
   saveOrderStateToPostgres,
+  saveOrderNotesToPostgres,
   savePurchaseConfirmationToPostgres,
 } from './server/postgresOrders';
+import { databricksSyncEnabled, databricksTableName, loadOrdersFromDatabricks } from './server/databricksSync';
 
 dotenv.config({ path: '.env.local' });
 dotenv.config();
@@ -87,7 +89,7 @@ interface ShipmentEvent {
   id: string;
   timestamp: string;
   location: string;
-  status: 'Not Shipped' | 'Preparing' | 'In Transit' | 'Out for Delivery' | 'Delivered' | 'Returned' | 'Cancelled';
+  status: 'Not Shipped' | 'Preparing' | 'In Transit' | 'At Distribution Center' | 'Out for Delivery' | 'Delivered' | 'Returned' | 'Cancelled';
   description: string;
 }
 
@@ -97,7 +99,7 @@ interface ShipmentData {
   tracking_number: string;
   estimated_delivery: string;
   actual_delivery_date: string | null;
-  shipment_status: 'Not Shipped' | 'Preparing' | 'In Transit' | 'Out for Delivery' | 'Delivered' | 'Returned' | 'Cancelled';
+  shipment_status: 'Not Shipped' | 'Preparing' | 'In Transit' | 'At Distribution Center' | 'Out for Delivery' | 'Delivered' | 'Returned' | 'Cancelled';
   databricks_sync_time: string;
   destination: string;
   origin_hub: string;
@@ -111,6 +113,7 @@ interface Order {
   customer_email: string;
   customer_phone?: string;
   customer_cpf?: string;
+
   customer_address?: string;
   customer_city?: string;
   customer_state?: string;
@@ -291,15 +294,19 @@ const groupOrders = (source: Order[]): Order[] => {
 
 const confirmationsPath = path.join(process.cwd(), 'data', 'marketplace-purchase-confirmations.json');
 const cancellationReasonsPath = path.join(process.cwd(), 'data', 'order-cancellation-reasons.json');
+const orderNotesPath = path.join(process.cwd(), 'data', 'order-notes.json');
 type PurchaseConfirmation = { confirmed: boolean; confirmed_at: string };
 let savedConfirmations: Record<string, PurchaseConfirmation> = {};
 type SavedCancellation = string | { reason: string; updated_at?: string };
 let savedCancellationReasons: Record<string, SavedCancellation> = {};
+type SavedOrderNote = string | { notes: string; updated_at?: string };
+let savedOrderNotes: Record<string, SavedOrderNote> = {};
 try {
   if (fs.existsSync(confirmationsPath)) savedConfirmations = JSON.parse(fs.readFileSync(confirmationsPath, 'utf8'));
   if (fs.existsSync(cancellationReasonsPath)) savedCancellationReasons = JSON.parse(fs.readFileSync(cancellationReasonsPath, 'utf8'));
+  if (fs.existsSync(orderNotesPath)) savedOrderNotes = JSON.parse(fs.readFileSync(orderNotesPath, 'utf8'));
 } catch (error) {
-  console.error('Could not read purchase confirmations:', error);
+  console.error('Could not read persisted operational data:', error);
 }
 
 let orders: Order[] = deduplicateOrderLines(CSV_ORDERS.map((o, index) => {
@@ -308,7 +315,10 @@ let orders: Order[] = deduplicateOrderLines(CSV_ORDERS.map((o, index) => {
   const cancellationReason = typeof savedCancellation === 'string' ? savedCancellation : savedCancellation?.reason;
   const cancellationUpdatedAt = typeof savedCancellation === 'string' ? undefined : savedCancellation?.updated_at;
   const savedConfirmationAt = savedConfirmations[key]?.confirmed_at;
-  const persistedUpdateDates = [o.updated_at, savedConfirmationAt, cancellationUpdatedAt].filter((value): value is string => Boolean(value));
+  const savedOrderNote = savedOrderNotes[key];
+  const persistedOrderNote = typeof savedOrderNote === 'string' ? savedOrderNote : savedOrderNote?.notes;
+  const noteUpdatedAt = typeof savedOrderNote === 'string' ? undefined : savedOrderNote?.updated_at;
+  const persistedUpdateDates = [o.updated_at, savedConfirmationAt, cancellationUpdatedAt, noteUpdatedAt].filter((value): value is string => Boolean(value));
   return {
     ...o,
     id: `${o.purchase_order || o.id}-${o.sequencial || o.sku || index}`,
@@ -317,6 +327,7 @@ let orders: Order[] = deduplicateOrderLines(CSV_ORDERS.map((o, index) => {
     shipment: cancellationReason ? { ...o.shipment, is_shipped: false, shipment_status: 'Cancelled' } : o.shipment,
     marketplace_purchase_confirmed: savedConfirmations[key]?.confirmed ?? Boolean(o.marketplace_order_date || o.marketplace_order_id),
     marketplace_purchase_confirmed_at: savedConfirmations[key]?.confirmed_at || o.marketplace_order_date || undefined,
+    notes: persistedOrderNote ?? o.notes,
     cancellation_reason: cancellationReason || undefined,
     cancellation_updated_at: cancellationReason ? (cancellationUpdatedAt || o.cancellation_updated_at || new Date().toISOString()) : o.cancellation_updated_at,
     updated_at: persistedUpdateDates.sort().at(-1) || o.updated_at,
@@ -349,6 +360,76 @@ applyDemoContactDefaults(orders);
 let activeDataSource: 'synthetic' | 'postgres' = 'synthetic';
 let databaseConnectionStatus: 'disabled' | 'connected' | 'error' = 'disabled';
 let databaseConnectionMessage = 'Using the bundled synthetic dataset.';
+let lastDatabricksPullAt = 0;
+let lastDatabricksPullIso = '';
+let lastDatabricksPullError = '';
+let databricksPullPromise: Promise<void> | null = null;
+
+const databricksLineKey = (order: Order) => [
+  normalizeKeyPart(order.purchase_order || order.id),
+  normalizeKeyPart(order.sku),
+].join(':::');
+
+const mergeDatabricksItem = (source: Order, existing?: Order): Order => {
+  if (!existing) return source;
+  const hasLocalCancellation = Boolean(existing.cancellation_reason);
+  return {
+    ...existing,
+    ...source,
+    sequencial: existing.sequencial || source.sequencial,
+    notes: existing.notes,
+    marketplace_purchase_confirmed: existing.marketplace_purchase_confirmed,
+    marketplace_purchase_confirmed_at: existing.marketplace_purchase_confirmed_at,
+    cancellation_reason: hasLocalCancellation ? existing.cancellation_reason : source.cancellation_reason,
+    cancellation_updated_at: hasLocalCancellation ? existing.cancellation_updated_at : source.cancellation_updated_at,
+    status: hasLocalCancellation ? 'Cancelled' : source.status,
+    status_text: hasLocalCancellation ? existing.status_text : source.status_text,
+    shipment: {
+      ...existing.shipment,
+      ...source.shipment,
+      shipment_status: hasLocalCancellation ? 'Cancelled' : source.shipment.shipment_status,
+      actual_delivery_date: hasLocalCancellation ? null : source.shipment.actual_delivery_date,
+      events: source.shipment.events.length ? source.shipment.events : existing.shipment.events,
+    },
+  };
+};
+
+const refreshDatabricksIfDue = async (force = false) => {
+  if (!databricksSyncEnabled()) return;
+  const intervalMs = Math.max(5000, Number(process.env.DATABRICKS_POLL_INTERVAL_MS || 15000));
+  if (!force && Date.now() - lastDatabricksPullAt < intervalMs) return;
+  if (databricksPullPromise) return databricksPullPromise;
+
+  databricksPullPromise = (async () => {
+    try {
+      const sourceItems = await loadOrdersFromDatabricks();
+      const currentByKey = new Map(orders.map(item => [databricksLineKey(item), item] as const));
+      const mergedSourceItems = sourceItems.map(item => mergeDatabricksItem(item, currentByKey.get(databricksLineKey(item))));
+
+      if (activeDataSource === 'postgres') {
+        await insertOrdersToPostgres(mergedSourceItems);
+        orders = applyDemoContactDefaults(deduplicateOrderLines(await loadOrdersFromPostgres()));
+      } else {
+        const sourceKeys = new Set(mergedSourceItems.map(databricksLineKey));
+        const localOnly = orders.filter(item => !sourceKeys.has(databricksLineKey(item)));
+        orders = applyDemoContactDefaults(deduplicateOrderLines([...mergedSourceItems, ...localOnly]));
+      }
+
+      lastDatabricksPullAt = Date.now();
+      lastDatabricksPullIso = new Date().toISOString();
+      lastDatabricksPullError = '';
+      console.log(`Databricks synchronized: ${sourceItems.length} product lines from ${databricksTableName()}.`);
+    } catch (error: any) {
+      lastDatabricksPullAt = Date.now();
+      lastDatabricksPullError = error?.message || String(error);
+      console.error(`Databricks synchronization failed: ${lastDatabricksPullError}`);
+    } finally {
+      databricksPullPromise = null;
+    }
+  })();
+
+  return databricksPullPromise;
+};
 
 const isCancellationStatus = (...values: unknown[]) => values.some(value =>
   typeof value === 'string' && value.toUpperCase().includes('CANCEL')
@@ -369,7 +450,6 @@ const reconcileLifecycle = (order: Order, source: Record<string, unknown> = {}) 
   order.customer_city = asText('customer_city', 'cidade_cliente', 'cidade') ?? order.customer_city;
   order.customer_state = asText('customer_state', 'estado_cliente', 'uf') ?? order.customer_state;
   const customerDestination = order.customer_address || [order.customer_city, order.customer_state].filter(Boolean).join(', ');
-  if (customerDestination) order.shipment.destination = customerDestination;
   order.invoice = asText('invoice') ?? order.invoice;
   order.wr_date = asDate('wr_date') ?? validForecastDate(order.wr_date);
   order.eta = asDate('eta') ?? validForecastDate(order.eta);
@@ -383,6 +463,10 @@ const reconcileLifecycle = (order: Order, source: Record<string, unknown> = {}) 
   order.shipment.tracking_number = asText('tracking_number', 'rastreio') ?? order.shipment.tracking_number;
   const suppliedEstimatedDelivery = asDate('estimated_delivery', 'previsao_entrega');
   order.shipment.estimated_delivery = suppliedEstimatedDelivery ?? validForecastDate(order.shipment.estimated_delivery) ?? '';
+  const sourceDestination = asText('destination', 'destino');
+  if (sourceDestination) order.shipment.destination = sourceDestination;
+  else if (customerDestination) order.shipment.destination = customerDestination;
+  order.shipment.origin_hub = asText('origin_hub', 'origem_logistica') ?? order.shipment.origin_hub;
 
   const explicitStatus = (asText('shipment_status', 'delivery_status', 'status_entrega') || '').toUpperCase();
   const isOutForDelivery = explicitStatus.includes('OUT FOR DELIVERY') || explicitStatus.includes('SAIU PARA ENTREGA') || explicitStatus.includes('ROTA DE ENTREGA');
@@ -417,7 +501,13 @@ const reconcileLifecycle = (order: Order, source: Record<string, unknown> = {}) 
     order.shipment.is_shipped = true;
     order.shipment.shipment_status = 'Out for Delivery';
     order.shipment.actual_delivery_date = null;
-  } else if (order.invoice || order.wr_date || order.etd || order.eta || order.di_date || order.entry_cd_date || explicitStatus.includes('TRANSIT')) {
+  } else if (order.entry_cd_date) {
+    order.status = 'Shipped';
+    order.sts_compra = 'COMPRADO';
+    order.shipment.is_shipped = true;
+    order.shipment.shipment_status = 'At Distribution Center';
+    order.shipment.actual_delivery_date = null;
+  } else if (order.invoice || order.wr_date || order.etd || order.eta || order.di_date || explicitStatus.includes('TRANSIT')) {
     order.status = 'Shipped';
     order.sts_compra = 'COMPRADO';
     order.shipment.is_shipped = true;
@@ -602,6 +692,17 @@ const saveCancellationReasons = () => {
   fs.writeFileSync(cancellationReasonsPath, JSON.stringify(payload, null, 2), 'utf8');
 };
 
+const saveOrderNotes = () => {
+  const payload: Record<string, { notes: string; updated_at?: string }> = {};
+  for (const order of orders) {
+    if (order.notes !== undefined) {
+      payload[orderGroupKey(order)] = { notes: order.notes || '', updated_at: order.updated_at };
+    }
+  }
+  fs.mkdirSync(path.dirname(orderNotesPath), { recursive: true });
+  fs.writeFileSync(orderNotesPath, JSON.stringify(payload, null, 2), 'utf8');
+};
+
 const findOrderByIdOrPo = (identifier: string) => {
   return orders.find(
     o => o.id === identifier || o.purchase_order === identifier || o.customer_order_id === identifier
@@ -641,6 +742,51 @@ const createSmtpTransport = (smtp: ReturnType<typeof smtpSettings>) => nodemaile
   greetingTimeout: smtp.connectionTimeout,
   socketTimeout: smtp.connectionTimeout,
 });
+
+
+const resendSettings = () => {
+  const apiKey = process.env.RESEND_API_KEY?.trim();
+  const from = process.env.RESEND_FROM?.trim() || 'MarketOps <onboarding@resend.dev>';
+  return { apiKey, from, configured: Boolean(apiKey && from) };
+};
+
+const sendWithResend = async (payload: {
+  to: string | string[];
+  subject: string;
+  text?: string;
+  html?: string;
+  cc?: string[];
+  replyTo?: string;
+  attachments?: Array<{ filename: string; content: Buffer }>;
+}) => {
+  const resend = resendSettings();
+  if (!resend.configured) throw new Error('Resend não configurado.');
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${resend.apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from: resend.from,
+      to: Array.isArray(payload.to) ? payload.to : [payload.to],
+      cc: payload.cc?.length ? payload.cc : undefined,
+      reply_to: payload.replyTo || undefined,
+      subject: payload.subject,
+      text: payload.text,
+      html: payload.html,
+      attachments: payload.attachments?.map(file => ({
+        filename: file.filename,
+        content: file.content.toString('base64'),
+      })),
+    }),
+  });
+  const data: any = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data?.message || data?.error || `Resend retornou HTTP ${response.status}`);
+  }
+  return { messageId: data?.id || 'resend-accepted' };
+};
 
 const statusLabelPt = (status: ShipmentData['shipment_status']) => ({
   'Not Shipped': 'Pedido recebido',
@@ -690,6 +836,7 @@ const customerStage = (order: Order) => {
 };
 
 const customerMessageForEvent = (order: Order, eventType: DeliveryAlert['event_type']) => {
+
   const stage = customerStage(order);
   if (stage.message) return stage.message;
   const po = order.purchase_order || order.id;
@@ -743,14 +890,16 @@ const buildDeliveryAlertHtml = (order: Order, title: string, message: string, ev
   return `<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:Arial,sans-serif;color:#172033">
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5f9;padding:28px 12px"><tr><td align="center">
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:620px;background:#ffffff;border:1px solid #dbe4ef;border-radius:16px;overflow:hidden">
-        <tr><td style="background:#17324d;color:#ffffff;padding:22px 26px"><div style="font-size:12px;opacity:.8">MarketOps • Atualização automática de entrega</div><h2 style="margin:6px 0 0;font-size:20px">${escapeHtml(stage.title || title)}</h2></td></tr>
+
+        <tr><td style="background:#17324d;color:#ffffff;padding:22px 26px"><div style="font-size:12px;opacity:.8">MarketOps • Atualização automática de entrega</div><h2 style="margin:6px 0 0;font-size:20px">${escapeHtml(title || stage.title)}</h2></td></tr>
         <tr><td style="padding:26px">
           <p style="margin:0 0 14px;font-size:14px">Olá, <strong>${escapeHtml(order.customer_name)}</strong>.</p>
           <p style="margin:0 0 18px;font-size:14px;line-height:1.6">${escapeHtml(message)}</p>
           ${progress}
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:separate;border-spacing:0 8px;font-size:13px">
             <tr><td style="color:#64748b;width:42%">Pedido</td><td style="font-weight:700">${escapeHtml(po)}</td></tr>
-            <tr><td style="color:#64748b">CPF</td><td>${escapeHtml(order.customer_cpf || 'Não informado')} ${order.customer_cpf ? '<span style="color:#94a3b8;font-size:10px">(dado fictício de demonstração)</span>' : ''}</td></tr>
+
+            <tr><td style="color:#64748b">CPF</td><td>${escapeHtml(order.customer_cpf || 'Não informado')}</td></tr>
             <tr><td style="color:#64748b">Status</td><td style="font-weight:700;color:#1d4ed8">${escapeHtml(status)}</td></tr>
             <tr><td style="color:#64748b">Rastreio</td><td style="font-weight:700">${escapeHtml(tracking)}</td></tr>
             <tr><td style="color:#64748b">Transportadora</td><td>${escapeHtml(carrier)}</td></tr>
@@ -809,6 +958,8 @@ async function dispatchDeliveryAlert(
   const recipient = recipientOverride?.trim() || (isReservedDemoAddress && demoRedirect ? demoRedirect : intended);
   const smtp = smtpSettings();
 
+  const resend = resendSettings();
+
   if (!recipient || !emailPattern.test(recipient)) {
     alert.status = 'simulated';
     alert.delivery_detail = 'E-mail do cliente não disponível. O evento foi registrado no histórico.';
@@ -821,28 +972,45 @@ async function dispatchDeliveryAlert(
     return alert;
   }
 
-  if (!smtp.configured) {
+
+  if (!resend.configured && !smtp.configured) {
     alert.status = 'simulated';
-    alert.delivery_detail = 'SMTP não configurado neste ambiente. O alerta foi registrado, mas não enviado externamente.';
+    alert.delivery_detail = 'Nenhum provedor de e-mail configurado. O alerta foi registrado, mas não enviado externamente.';
     return alert;
   }
 
   try {
-    const transporter = createSmtpTransport(smtp);
-    const info = await transporter.sendMail({
-      from: smtp.from,
-      to: recipient,
-      subject: alert.subject,
-      text: alert.message,
-      html: buildDeliveryAlertHtml(order, eventTypeLabelPt(eventType), alert.message, eventType),
-    });
+
+    let messageId = '';
+    let provider = '';
+    if (resend.configured) {
+      const info = await sendWithResend({
+        to: recipient,
+        subject: alert.subject,
+        text: alert.message,
+        html: buildDeliveryAlertHtml(order, eventTypeLabelPt(eventType), alert.message, eventType),
+      });
+      messageId = info.messageId;
+      provider = 'Resend';
+    } else {
+      const transporter = createSmtpTransport(smtp);
+      const info = await transporter.sendMail({
+        from: smtp.from,
+        to: recipient,
+        subject: alert.subject,
+        text: alert.message,
+        html: buildDeliveryAlertHtml(order, eventTypeLabelPt(eventType), alert.message, eventType),
+      });
+      messageId = info.messageId;
+      provider = 'SMTP';
+    }
     alert.recipient_email = recipient;
     alert.status = 'sent';
-    alert.delivery_detail = `SMTP aceitou a mensagem (${info.messageId}).`;
+    alert.delivery_detail = `${provider} aceitou a mensagem (${messageId}).`;
     return alert;
   } catch (error: any) {
     alert.status = 'failed';
-    alert.delivery_detail = error?.message || 'Falha desconhecida ao enviar via SMTP.';
+    alert.delivery_detail = error?.message || 'Falha desconhecida ao enviar o e-mail.';
     return alert;
   }
 }
@@ -865,11 +1033,13 @@ app.get('/api/health', (req, res) => {
 
 app.get('/api/email/status', (_req, res) => {
   const smtp = smtpSettings();
+
+  const resend = resendSettings();
   const senderAddress = smtp.from?.match(/<([^>]+)>/)?.[1] || smtp.from || smtp.user || '';
   res.json({
-    configured: smtp.configured,
+    configured: resend.configured || smtp.configured,
     demo_redirect_configured: Boolean(process.env.DEMO_ALERT_RECIPIENT?.trim()),
-    mode: smtp.configured ? 'smtp' : 'log-only',
+    mode: resend.configured ? 'resend' : (smtp.configured ? 'smtp' : 'log-only'),
     allowed_senders: process.env.NODE_ENV !== 'production'
       ? [...new Set([smtp.user, senderAddress, ...(process.env.SMTP_ALLOWED_FROM_ADDRESSES || '').split(/[;,]/)].map(value => value?.trim()).filter(Boolean))]
       : [],
@@ -877,22 +1047,32 @@ app.get('/api/email/status', (_req, res) => {
 });
 
 app.post('/api/email/verify', async (_req, res) => {
+
+  const resend = resendSettings();
+  if (resend.configured) {
+    return res.json({ verified: true, provider: 'resend', message: 'Resend configurado. Faça um alerta de teste para validar o envio.' });
+  }
   const smtp = smtpSettings();
-  if (!smtp.configured) return res.status(503).json({ verified: false, error: 'SMTP não configurado.' });
+  if (!smtp.configured) return res.status(503).json({ verified: false, error: 'Nenhum provedor de e-mail configurado.' });
   try {
     await createSmtpTransport(smtp).verify();
-    res.json({ verified: true, message: 'Conexão e autenticação SMTP verificadas.' });
+    res.json({ verified: true, provider: 'smtp', message: 'Conexão e autenticação SMTP verificadas.' });
   } catch (error: any) {
     res.status(502).json({ verified: false, error: error?.message || 'Falha na verificação SMTP.' });
   }
 });
 
 // 2. Dashboard Analytics & Summary Statistics
-app.get('/api/dashboard/stats', (req, res) => {
+app.get('/api/dashboard/stats', async (req, res) => {
+  await refreshDatabricksIfDue();
   const grouped = groupOrders(orders);
   const total = grouped.length;
   const pending = grouped.filter(o => o.status === 'Pending' || o.status === 'Processing').length;
-  const shipped = grouped.filter(o => o.status === 'Shipped' && (o.items?.length ? o.items : [o]).some(item => Boolean(item.invoice?.trim()))).length;
+
+  const shipped = grouped.filter(order => {
+    const items = order.items?.length ? order.items : [order];
+    return order.status !== 'Delivered' && order.status !== 'Cancelled' && items.some(item => Boolean(item.invoice?.trim()));
+  }).length;
   const delivered = grouped.filter(o => o.status === 'Delivered').length;
   const cancelled = grouped.filter(o => o.status === 'Cancelled').length;
   const total_revenue = orders.reduce((acc, curr) => acc + (curr.status !== 'Cancelled' ? curr.total_price : 0), 0);
@@ -907,10 +1087,10 @@ app.get('/api/dashboard/stats', (req, res) => {
     delivered_orders: delivered,
     cancelled_orders: cancelled,
     databricks_sync_status: {
-      last_sync: new Date().toISOString().replace('T', ' ').substring(0, 19) + ' UTC',
-      table: activeDataSource === 'postgres' ? 'public.orders + public.order_items + public.logistics' : 'synthetic demo dataset',
+      last_sync: (lastDatabricksPullIso || new Date().toISOString()).replace('T', ' ').substring(0, 19) + ' UTC',
+      table: databricksSyncEnabled() ? databricksTableName().replace(/`/g, '') : (activeDataSource === 'postgres' ? 'public.orders + public.order_items + public.logistics' : 'synthetic demo dataset'),
       total_records: total,
-      status: databaseConnectionStatus === 'error' ? 'connected' : 'healthy'
+      status: lastDatabricksPullError ? 'connected' : 'healthy'
     }
   });
 });
@@ -924,7 +1104,8 @@ app.get('/api/sellers', (_req, res) => {
 });
 
 // 3. Get all orders with multi-parameter filter & search
-app.get('/api/orders', (req, res) => {
+app.get('/api/orders', async (req, res) => {
+  await refreshDatabricksIfDue();
   const { search, status, date_from, date_to, marketplace, operational, sort_by, sort_direction } = req.query;
 
   let filtered = [...orders];
@@ -943,6 +1124,7 @@ app.get('/api/orders', (req, res) => {
       o.shipment.tracking_number.toLowerCase().includes(q)
     );
   }
+
 
   if (status && typeof status === 'string' && status !== 'All') {
     filtered = filtered.filter(o => status === 'Shipped'
@@ -971,8 +1153,20 @@ app.get('/api/orders', (req, res) => {
     filtered = filtered.filter(o => o.date_order <= date_to);
   }
 
-  // Expose one visual order with all its product lines, then apply the selected ordering.
+  // Expose one visual order with all its product lines before applying status semantics.
+  // "In Transit" is intentionally invoice-driven: an order enters this filter only
+  // after at least one active product line has an Invoice and before customer delivery.
   let grouped = groupOrders(filtered);
+  if (status && typeof status === 'string' && status !== 'All') {
+    const normalizedStatus = status.toLowerCase();
+    grouped = grouped.filter(order => {
+      if (normalizedStatus === 'shipped') {
+        const items = order.items?.length ? order.items : [order];
+        return order.status !== 'Delivered' && order.status !== 'Cancelled' && items.some(item => Boolean(item.invoice?.trim()));
+      }
+      return order.status.toLowerCase() === normalizedStatus;
+    });
+  }
   const selectedSort: 'date_order' | 'updated_at' = sort_by === 'date_order' ? 'date_order' : 'updated_at';
   const direction = sort_direction === 'asc' ? 1 : -1;
   grouped.sort((a, b) => {
@@ -989,8 +1183,12 @@ app.get('/api/orders', (req, res) => {
       const items = order.items?.length ? order.items : [order];
       const isOpen = order.status !== 'Delivered' && order.status !== 'Cancelled';
       const any = (predicate: (item: Order) => boolean) => items.some(predicate);
-      if (operational === 'in_distribution_center') {
-        return isOpen && any(item => Boolean(item.entry_cd_date) && !item.billing_date && !item.delivery_client_date);
+      if (operational === 'in_distribution_center' || operational === 'at_distribution_center') {
+        const activeItems = items.filter(item => item.status !== 'Cancelled');
+        const hasEntryCd = activeItems.some(item => Boolean(item.entry_cd_date));
+        const hasBilling = activeItems.some(item => Boolean(item.billing_date));
+        const hasDelivery = activeItems.some(item => Boolean(item.delivery_client_date));
+        return activeItems.length > 0 && hasEntryCd && !hasBilling && !hasDelivery;
       }
       if (operational === 'not_purchased') return order.status !== 'Cancelled' && !order.marketplace_purchase_confirmed;
       if (operational === 'missing_wr') {
@@ -1014,6 +1212,7 @@ app.get('/api/orders', (req, res) => {
 // Receives future Delta/Databricks changes and reconciles lifecycle status from source-of-truth fields.
 // Expected body: { records: [{ purchase_order, sku?, status_compra?, invoice?, di_date?, entrada_cd?, entrega_cliente? }] }
 app.post('/api/databricks/reconcile', async (req, res) => {
+
   const requiredToken = process.env.DATABRICKS_RECONCILE_TOKEN?.trim();
   if (requiredToken && req.headers.authorization !== `Bearer ${requiredToken}`) {
     return res.status(401).json({ error: 'Token de reconciliação do Databricks inválido ou ausente.' });
@@ -1023,6 +1222,7 @@ app.post('/api/databricks/reconcile', async (req, res) => {
 
   const updatedGroups = new Set<string>();
   const previousLifecycle = new Map<string, LifecycleSnapshot>();
+  const previousShipmentStatus = new Map<string, ShipmentData['shipment_status']>();
   const notFound: unknown[] = [];
 
   for (const record of records) {
@@ -1044,7 +1244,9 @@ app.post('/api/databricks/reconcile', async (req, res) => {
       const key = orderGroupKey(order);
       if (!previousLifecycle.has(key)) {
         const currentGroup = groupOrders(orders.filter(candidate => orderGroupKey(candidate) === key))[0];
-        previousLifecycle.set(key, lifecycleSnapshot(currentGroup || order));
+        const snapshotOrder = currentGroup || order;
+        previousLifecycle.set(key, lifecycleSnapshot(snapshotOrder));
+        previousShipmentStatus.set(key, snapshotOrder.shipment.shipment_status);
       }
       reconcileLifecycle(order, record);
       updatedGroups.add(key);
@@ -1065,11 +1267,19 @@ app.post('/api/databricks/reconcile', async (req, res) => {
   saveCancellationReasons();
   const triggeredAlerts: DeliveryAlert[] = [];
   for (const groupedOrder of grouped) {
-    const before = previousLifecycle.get(orderGroupKey(groupedOrder));
+    const key = orderGroupKey(groupedOrder);
+    const before = previousLifecycle.get(key);
+    let lifecycleAlertSent = false;
     if (before) {
       for (const event of lifecycleAlerts(before, lifecycleSnapshot(groupedOrder), groupedOrder)) {
         triggeredAlerts.push(await dispatchDeliveryAlert(groupedOrder, event.type, event.subject, event.message));
+        lifecycleAlertSent = true;
       }
+    }
+    const previousStatus = previousShipmentStatus.get(key);
+    const currentStatus = groupedOrder.shipment.shipment_status;
+    if (!lifecycleAlertSent && previousStatus && previousStatus !== currentStatus) {
+      triggeredAlerts.push(await dispatchDeliveryAlert(groupedOrder, eventTypeForShipmentStatus(currentStatus)));
     }
   }
 
@@ -1110,6 +1320,39 @@ app.patch('/api/orders/:id/purchase-confirmation', async (req, res) => {
     item.updated_at = updatedAt;
   });
   savePurchaseConfirmations();
+  res.json({ success: true, order: groupOrders(relatedItems)[0] });
+});
+
+app.patch('/api/orders/:id/notes', async (req, res) => {
+  const order = findOrderByIdOrPo(req.params.id);
+  if (!order) return res.status(404).json({ error: `Order ${req.params.id} not found` });
+
+  const notes = String(req.body?.notes ?? '').trim();
+  if (notes.length > 1500) {
+    return res.status(400).json({ error: 'A observação deve ter no máximo 1500 caracteres.' });
+  }
+
+  const relatedItems = orders.filter(candidate => orderGroupKey(candidate) === orderGroupKey(order));
+  const updatedAt = new Date().toISOString();
+
+  if (activeDataSource === 'postgres') {
+    try {
+      await saveOrderNotesToPostgres(
+        order.purchase_order || order.id,
+        notes,
+        order.account_user,
+      );
+    } catch (error: any) {
+      return res.status(500).json({ error: `Could not save the order note in PostgreSQL: ${error?.message || error}` });
+    }
+  }
+
+  relatedItems.forEach(item => {
+    item.notes = notes || undefined;
+    item.updated_at = updatedAt;
+  });
+  saveOrderNotes();
+
   res.json({ success: true, order: groupOrders(relatedItems)[0] });
 });
 
@@ -1241,6 +1484,7 @@ app.post('/api/orders', async (req, res) => {
       customer_email,
       customer_phone,
       customer_cpf,
+
       customer_address,
       customer_city,
       customer_state,
@@ -1313,6 +1557,7 @@ app.post('/api/orders', async (req, res) => {
       customer_email: customer_email?.trim() || demoEmailFor(customer_name.trim()),
       customer_phone: customer_phone?.trim() || DEMO_PHONE,
       customer_cpf: customer_cpf?.trim() || '000.000.000-00',
+
       customer_address: customer_address?.trim() || destination_address?.trim() || undefined,
       customer_city: customer_city?.trim() || undefined,
       customer_state: customer_state?.trim() || undefined,
@@ -1486,6 +1731,7 @@ app.post('/api/orders/batch', async (req, res) => {
         customer_email: item.customer_email?.trim() || demoEmailFor(demoCustomerName),
         customer_phone: item.customer_phone?.trim() || DEMO_PHONE,
         customer_cpf: item.customer_cpf?.trim() || item.cpf_cliente?.trim() || '000.000.000-00',
+
         customer_address: item.customer_address?.trim() || undefined,
         customer_city: item.customer_city?.trim() || undefined,
         customer_state: item.customer_state?.trim() || undefined,
@@ -1663,6 +1909,18 @@ app.post('/api/orders/:id/sync-databricks', async (req, res) => {
 
 // 7. Demo bulk logistics reconciliation. Production Databricks events use /api/databricks/reconcile.
 app.post('/api/databricks/sync-all', async (req, res) => {
+  if (databricksSyncEnabled()) {
+    await refreshDatabricksIfDue(true);
+    if (lastDatabricksPullError) return res.status(502).json({ error: lastDatabricksPullError });
+    return res.json({
+      success: true,
+      message: 'Sincronização real com o Databricks concluída.',
+      sync_time: lastDatabricksPullIso,
+      integration_mode: 'databricks-sql-warehouse',
+      lakehouse_table: databricksTableName().replace(/`/g, ''),
+      orders: groupOrders(orders).length,
+    });
+  }
   const nowUtc = new Date().toISOString().replace('T', ' ').substring(0, 19) + ' UTC';
   const previousOrders = orders.map(order => structuredClone(order));
   const previousStatuses = new Map(
@@ -1915,13 +2173,15 @@ app.post('/api/alerts/test', async (req, res) => {
     targetOrder,
     event,
     `[TESTE] [MarketOps] ${eventTypeLabelPt(event)} • Pedido ${targetOrder.purchase_order || targetOrder.id}`,
-    message || `Olá, ${targetOrder.customer_name}. Este é um teste: o pedido ${targetOrder.purchase_order || targetOrder.id} foi atualizado para ${eventTypeLabelPt(event)}.`,
+
+    message || customerMessageForEvent(targetOrder, event),
     recipient_email,
   );
 
   res.json({
     success: alert.status !== 'failed',
-    message: alert.status === 'sent' ? 'E-mail de teste enviado via SMTP.' : 'Alerta de teste registrado no histórico.',
+
+    message: alert.status === 'sent' ? 'E-mail de teste enviado.' : 'Alerta de teste registrado no histórico.',
     alert
   });
 });
@@ -1962,6 +2222,7 @@ app.post('/api/reports/email', async (req, res) => {
       'Data da compra', 'SKU Marketplace', 'Descrição do Material', 'SKU Principal (ASIN)', 'Seller',
       'Origem (País Seller)', 'Ordem de Cliente', 'Ordem de Compra', 'Quantidade',
       'Valor Unitário Seller (USD)', 'Valor Total Seller (USD)', 'Status do Pedido', 'Cliente',
+
       'E-mail', 'Telefone', 'CPF', 'Endereço do cliente', 'Cidade', 'UF', 'Invoice', 'WR Magaya', 'Compra no Marketplace Confirmada', 'Data da Confirmação da Compra',
       'Número de Rastreio', 'Status da Entrega', 'Previsão de Entrega',
       'Unidade', 'Status Operacional', 'Descrição do Status', 'Limite de Entrega (dias)',
@@ -1972,6 +2233,7 @@ app.post('/api/reports/email', async (req, res) => {
     const headersEn = [
       'Purchase Date', 'Marketplace SKU', 'Material Description', 'Primary SKU (ASIN)', 'Seller',
       'Seller Country', 'Customer Order', 'Purchase Order', 'Quantity', 'Seller Unit Cost (USD)',
+
       'Seller Total Cost (USD)', 'Order Status', 'Customer', 'Email', 'Phone', 'CPF', 'Customer Address', 'City', 'State', 'Invoice', 'Warehouse Receipt',
       'Marketplace Purchase Confirmed', 'Purchase Confirmation Date', 'Tracking Number',
       'Shipment Status', 'Estimated Delivery', 'Unit', 'Operational Status', 'Status Description',
@@ -1984,6 +2246,7 @@ app.post('/api/reports/email', async (req, res) => {
       order.date_order, String(order.sku || ''), order.product_name, String(order.asin || ''), order.marketplace,
       order.seller_country || '', String(order.customer_order_id || ''), String(order.purchase_order || order.id),
       order.quantity, order.price_unit, order.seller_usd_total ?? order.total_price, order.status,
+
       order.customer_name, order.customer_email || '', order.customer_phone || '', order.customer_cpf || '', order.customer_address || '', order.customer_city || '', order.customer_state || '', order.invoice || '', order.magaya_wr || '', order.marketplace_purchase_confirmed ? label('SIM','YES') : label('NÃO','NO'),
       order.marketplace_purchase_confirmed_at || '', String(order.shipment.tracking_number || ''),
       order.shipment.shipment_status, order.shipment.estimated_delivery || '', order.unit_measure || '',
@@ -2146,9 +2409,12 @@ async function startServer() {
     }
   }
 
-  // Forecasts must also exist for orders loaded at startup, not only after a
-  // Databricks reconciliation event. This keeps the detail screen populated
-  // immediately for both PostgreSQL and the bundled demonstration dataset.
+  if (databricksSyncEnabled()) {
+    await refreshDatabricksIfDue(true);
+    if (lastDatabricksPullError) {
+      console.error(`Databricks initial sync unavailable: ${lastDatabricksPullError}`);
+    }
+  }
   orders.forEach(order => reconcileLifecycle(order));
 
   if (process.env.NODE_ENV !== 'production') {

@@ -50,7 +50,7 @@ export const LiveTrackingCard: React.FC<LiveTrackingCardProps> = ({ order, onVie
           </div>
           <p className="mt-1 text-[11px] text-slate-500">{pt?'Considerando os filtros atuais':'Based on current filters'}</p>
         </div>
-        <span className={`rounded-full border px-2 py-1 text-[10px] font-bold uppercase ${statusStyles}`}>{order.status === 'Shipped' ? 'In Transit' : order.status}</span>
+        <span className={`rounded-full border px-2 py-1 text-[10px] font-bold uppercase ${statusStyles}`}>{pt ? ({ Shipped: 'Em trânsito', Delivered: 'Entregue', Pending: 'Pendente', Processing: 'Em processamento', Cancelled: 'Cancelado' } as Record<string, string>)[order.status] || order.status : (order.status === 'Shipped' ? 'In Transit' : order.status)}</span>
       </div>
 
       <div className="rounded-xl border border-amber-400/20 bg-amber-400/10 p-4">
@@ -66,7 +66,7 @@ export const LiveTrackingCard: React.FC<LiveTrackingCardProps> = ({ order, onVie
 
       <div className="mt-5 grid grid-cols-2 gap-2">
         <Metric icon={CalendarDays} label={pt?'Data da compra':'Purchase Date'} value={formatDate(referenceItem.date_order, pt ? 'pt' : 'en')} />
-        <Metric icon={Warehouse} label="WR Date" value={formatDate(referenceItem.wr_date, pt ? 'pt' : 'en')} />
+        <Metric icon={Warehouse} label={pt ? 'Data de recebimento (WR)' : 'WR Date'} value={formatDate(referenceItem.wr_date, pt ? 'pt' : 'en')} />
         <Metric icon={CalendarDays} label="ETA" value={formatDate(referenceItem.eta, pt ? 'pt' : 'en')} amber />
         <Metric icon={Warehouse} label="WR Magaya" value={wrNumbers.join(', ') || (pt?'Não informado':'Not available')} amber />
       </div>

@@ -1,0 +1,17 @@
+ATUALIZAÇÃO RESEND - MarketOps
+
+1. Substitua no GitHub:
+   - server.ts
+   - src/components/OrderDetailModal.tsx
+   - .env.example (opcional)
+
+2. No Render, mantenha:
+   RESEND_API_KEY = sua chave secreta
+   RESEND_FROM = MarketOps <onboarding@resend.dev>
+
+3. Faça o deploy.
+
+4. Teste no site:
+   abra um pedido > Enviar alerta 'Saiu para entrega'.
+
+O backend agora prioriza Resend via HTTPS. SMTP fica apenas como fallback.

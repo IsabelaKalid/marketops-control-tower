@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '../auth/AuthProvider';
 import { 
   Check, 
@@ -49,12 +49,17 @@ export const OrderTable: React.FC<OrderTableProps> = ({
     const saved = Number(localStorage.getItem('marketops-orders-page'));
     return Number.isInteger(saved) && saved > 0 ? saved : 1;
   });
+  const paginationRef = useRef<HTMLDivElement>(null);
   const pageSize = 20;
   const totalPages = Math.max(1, Math.ceil(orders.length / pageSize));
   const displayedOrders = useMemo(
     () => orders.slice((currentPage - 1) * pageSize, currentPage * pageSize),
     [orders, currentPage]
   );
+  const goToPage = (page: number) => {
+    setCurrentPage(Math.min(totalPages, Math.max(1, page)));
+    requestAnimationFrame(() => paginationRef.current?.scrollIntoView({ block: 'end', behavior: 'auto' }));
+  };
 
   useEffect(() => {
     localStorage.setItem('marketops-orders-page', String(currentPage));
@@ -129,35 +134,35 @@ export const OrderTable: React.FC<OrderTableProps> = ({
         return (
           <span className="px-2.5 py-1 bg-emerald-100 text-emerald-800 rounded-full text-xs font-bold inline-flex items-center gap-1">
             <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-            Delivered
+            {pt ? 'Entregue' : 'Delivered'}
           </span>
         );
       case 'Shipped':
         return (
           <span className="px-2.5 py-1 bg-blue-100 text-blue-800 rounded-full text-xs font-bold inline-flex items-center gap-1">
             <Truck className="w-3 h-3 text-blue-600" />
-            In Transit
+            {pt ? 'Em trânsito' : 'In Transit'}
           </span>
         );
       case 'Processing':
         return (
           <span className="px-2.5 py-1 bg-purple-100 text-purple-800 rounded-full text-xs font-bold inline-flex items-center gap-1">
             <Package className="w-3 h-3 text-purple-600" />
-            Processing
+            {pt ? 'Em processamento' : 'Processing'}
           </span>
         );
       case 'Pending':
         return (
           <span className="px-2.5 py-1 bg-amber-100 text-amber-800 rounded-full text-xs font-bold inline-flex items-center gap-1">
             <Clock className="w-3 h-3 text-amber-600" />
-            Pending
+            {pt ? 'Pendente' : 'Pending'}
           </span>
         );
       case 'Cancelled':
         return (
           <span className="px-2.5 py-1 bg-rose-100 text-rose-800 rounded-full text-xs font-bold inline-flex items-center gap-1">
             <XCircle className="w-3 h-3 text-rose-600" />
-            Cancelled
+            {pt ? 'Cancelado' : 'Cancelled'}
           </span>
         );
       default:
@@ -175,7 +180,7 @@ export const OrderTable: React.FC<OrderTableProps> = ({
       return (
         <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600">
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-          Delivered
+          {pt ? 'Entregue' : 'Delivered'}
         </span>
       );
     }
@@ -183,7 +188,15 @@ export const OrderTable: React.FC<OrderTableProps> = ({
       return (
         <span className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 animate-pulse">
           <span className="w-1.5 h-1.5 rounded-full bg-blue-500" />
-          Out for Delivery
+          {pt ? 'Saiu para entrega' : 'Out for Delivery'}
+        </span>
+      );
+    }
+    if (shipment_status === 'At Distribution Center') {
+      return (
+        <span className="inline-flex items-center gap-1 text-xs font-semibold text-violet-700">
+          <span className="w-1.5 h-1.5 rounded-full bg-violet-500" />
+          {pt ? 'No centro de distribuição' : 'At Distribution Center'}
         </span>
       );
     }
@@ -191,7 +204,7 @@ export const OrderTable: React.FC<OrderTableProps> = ({
       return (
         <span className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600">
           <span className="w-1.5 h-1.5 rounded-full bg-blue-500" />
-          In Transit
+          {pt ? 'Em trânsito' : 'In Transit'}
         </span>
       );
     }
@@ -199,14 +212,14 @@ export const OrderTable: React.FC<OrderTableProps> = ({
       return (
         <span className="inline-flex items-center gap-1 text-xs font-bold text-rose-700">
           <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
-          Cancelled
+          {pt ? 'Cancelado' : 'Cancelled'}
         </span>
       );
     }
     return (
       <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-600">
         <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-        Not Shipped
+        {pt ? 'Ainda não enviado' : 'Not Shipped'}
       </span>
     );
   };
@@ -217,9 +230,9 @@ export const OrderTable: React.FC<OrderTableProps> = ({
         <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center mx-auto mb-3 text-slate-400">
           <AlertCircle className="w-6 h-6" />
         </div>
-        <h3 className="text-base font-semibold text-slate-800">No marketplace orders match your criteria</h3>
+        <h3 className="text-base font-semibold text-slate-800">{pt ? 'Nenhum pedido corresponde aos filtros selecionados' : 'No marketplace orders match your criteria'}</h3>
         <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
-          Try clearing your search filters or click "Send Multiple Orders" to import your 13-column spreadsheet orders.
+          {pt ? 'Limpe os filtros de pesquisa ou clique em “Enviar vários pedidos” para importar sua planilha.' : 'Try clearing your search filters or click "Send Multiple Orders" to import your 13-column spreadsheet orders.'}
         </p>
       </div>
     );
@@ -231,7 +244,7 @@ export const OrderTable: React.FC<OrderTableProps> = ({
       <div className="px-6 py-3.5 border-b border-slate-100 bg-slate-50/70 flex flex-wrap justify-between items-center gap-3">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
-            <h4 className="font-bold text-slate-800 text-sm tracking-tight">Live Order Flow</h4>
+            <h4 className="font-bold text-slate-800 text-sm tracking-tight">{pt ? 'Fluxo de pedidos' : 'Live Order Flow'}</h4>
             <span className="text-xs text-slate-400 font-mono">({orders.length})</span>
           </div>
 
@@ -247,7 +260,7 @@ export const OrderTable: React.FC<OrderTableProps> = ({
               }`}
             >
               <TableIcon className="w-3.5 h-3.5 text-blue-600" />
-              <span>13-Column Spreadsheet View</span>
+              <span>{pt ? 'Visão em planilha (13 colunas)' : '13-Column Spreadsheet View'}</span>
             </button>
             <button
               type="button"
@@ -259,7 +272,7 @@ export const OrderTable: React.FC<OrderTableProps> = ({
               }`}
             >
               <LayoutGrid className="w-3.5 h-3.5 text-slate-500" />
-              <span>Standard Card View</span>
+              <span>{pt ? 'Visão resumida' : 'Standard Card View'}</span>
             </button>
           </div>
         </div>
@@ -267,7 +280,7 @@ export const OrderTable: React.FC<OrderTableProps> = ({
         <div className="text-xs text-slate-500 flex items-center gap-2">
           <div className="flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            <span className="font-medium text-slate-600">Databricks Delta Lake Synchronized</span>
+            <span className="font-medium text-slate-600">{pt ? 'Dados logísticos atualizados pelo backend' : 'Logistics data refreshed by backend'}</span>
           </div>
         </div>
       </div>
@@ -319,7 +332,7 @@ export const OrderTable: React.FC<OrderTableProps> = ({
                 <th className="px-3 py-3">SKU Marketplace</th>
                 <th className="px-3 py-3">{pt?'Descrição do Material':'Product Description'}</th>
                 <th className="px-3 py-3">SKU Principal (ASIN)</th>
-                <th className="px-3 py-3">Seller</th>
+                <th className="px-3 py-3">{pt ? 'Vendedor' : 'Seller'}</th>
                 <th className="px-3 py-3">{pt?'Origem (País)':'Origin (Country)'}</th>
                 <th className="px-3 py-3">{pt?'Ordem Cliente':'Customer Order'}</th>
                 <th className="px-3 py-3 bg-blue-50/80 text-blue-900 border-x border-blue-200/60 font-bold">{pt?'Ordem Compra (PO / ID)':'Purchase Order (PO / ID)'}</th>
@@ -328,7 +341,7 @@ export const OrderTable: React.FC<OrderTableProps> = ({
                 <th className="px-3 py-3 text-center">{pt?'Qtd':'Qty'}</th>
                 <th className="px-3 py-3 text-right">{pt?'Preço VKP2':'VKP2 Price'}</th>
                 <th className="px-3 py-3 text-right">{pt?'Valor Compra Seller':'Seller Purchase Cost'}</th>
-                <th className="px-3 py-3">Databricks Tracking</th>
+                <th className="px-3 py-3">{pt ? 'Rastreamento logístico' : 'Logistics Tracking'}</th>
                 <th className="px-3 py-3 text-right">{pt?'Ação':'Action'}</th>
               </tr>
             </thead>
@@ -398,7 +411,7 @@ export const OrderTable: React.FC<OrderTableProps> = ({
                         <span>{order.purchase_order || order.id}</span>
                         <button
                           onClick={(e) => handleCopy(order.purchase_order || order.id, `po-${order.id}`, e)}
-                          title="Copy Ordem de Compra (PO)"
+                          title={pt ? 'Copiar ordem de compra (PO)' : 'Copy purchase order (PO)'}
                           className="text-slate-400 hover:text-blue-600 p-0.5"
                         >
                           {copiedId === `po-${order.id}` ? (
@@ -454,7 +467,7 @@ export const OrderTable: React.FC<OrderTableProps> = ({
                         : `$${order.total_price.toFixed(2)}`}
                     </td>
 
-                    {/* Databricks Tracking */}
+                    {/* {pt ? 'Rastreamento logístico' : 'Logistics Tracking'} */}
                     <td className="px-3 py-3">
                       <div className="flex items-center gap-1.5">
                         {getShipmentBadge(order.shipment)}
@@ -470,7 +483,7 @@ export const OrderTable: React.FC<OrderTableProps> = ({
                         <button
                           id={`btn-view-${order.id}`}
                           onClick={() => onSelectOrder(order)}
-                          title="View order details"
+                          title={pt ? 'Ver detalhes do pedido' : 'View order details'}
                           className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs transition-colors"
                         >
                           <Eye className="w-3.5 h-3.5" />
@@ -494,16 +507,16 @@ export const OrderTable: React.FC<OrderTableProps> = ({
 }`} /></th>
                 <th className="px-6 py-4">Ordem de Compra (PO)</th>
                 <th className="px-6 py-4">{pt?'Cliente':'Customer'}</th>
-                <th className="px-6 py-4">Product Details</th>
-                <th className="px-6 py-4 text-right">Financials</th>
-                <th className="px-6 py-4">Status</th>
+                <th className="px-6 py-4">{pt ? 'Detalhes do produto' : 'Product Details'}</th>
+                <th className="px-6 py-4 text-right">{pt ? 'Valores' : 'Financials'}</th>
+                <th className="px-6 py-4">{pt ? 'Situação' : 'Status'}</th>
                 <th className="px-6 py-4">
                   <span className="inline-flex items-center gap-1">
-                    Databricks Shipment
+                    {pt ? 'Dados da remessa' : 'Shipment Data'}
                     <Database className="w-3 h-3 text-amber-500" />
                   </span>
                 </th>
-                <th className="px-6 py-4 text-right">Actions</th>
+                <th className="px-6 py-4 text-right">{pt ? 'Ações' : 'Actions'}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50 text-sm">
@@ -538,7 +551,7 @@ export const OrderTable: React.FC<OrderTableProps> = ({
                         </span>
                         <button
                           onClick={(e) => handleCopy(order.purchase_order || order.id, order.id, e)}
-                          title="Copy Ordem de Compra (PO)"
+                          title={pt ? 'Copiar ordem de compra (PO)' : 'Copy purchase order (PO)'}
                           className="text-slate-400 hover:text-slate-700 p-0.5 transition-colors"
                         >
                           {copiedId === order.id ? (
@@ -549,11 +562,11 @@ export const OrderTable: React.FC<OrderTableProps> = ({
                         </button>
                       </div>
                       <div className="text-xs text-slate-500 font-mono mt-1">
-                        {order.marketplace} • {order.date_order} • Origem: {order.seller_country || 'EUA'}
+                        {order.marketplace} • {order.date_order} • {pt ? 'Origem' : 'Origin'}: {order.seller_country || 'EUA'}
                       </div>
                       {order.customer_order_id && (
                         <div className="text-[11px] text-slate-400 font-mono mt-0.5">
-                          Ordem Cliente: #{order.customer_order_id} {order.sequencial ? `• Seq ${order.sequencial}` : ''}
+                          {pt ? 'Ordem do cliente' : 'Customer order'}: #{order.customer_order_id} {order.sequencial ? `• Seq ${order.sequencial}` : ''}
                         </div>
                       )}
                     </td>
@@ -598,7 +611,7 @@ export const OrderTable: React.FC<OrderTableProps> = ({
                             VKP2: R$ {order.vkp2_price.toFixed(2)} (Qtd {order.quantity})
                           </span>
                         ) : (
-                          `Qty: ${order.quantity} ($${order.price_unit.toFixed(2)} ea)`
+                          `${pt ? 'Qtd.' : 'Qty'}: ${order.quantity} ($${order.price_unit.toFixed(2)} ${pt ? 'cada' : 'ea'})`
                         )}
                       </div>
                     </td>
@@ -616,7 +629,7 @@ export const OrderTable: React.FC<OrderTableProps> = ({
                       </div>
                     </td>
 
-                    {/* Databricks Shipment Tracking */}
+                    {/* {pt ? 'Dados da remessa' : 'Shipment Data'} Tracking */}
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="space-y-0.5">
                         <div className="flex items-center gap-2">
@@ -632,7 +645,7 @@ export const OrderTable: React.FC<OrderTableProps> = ({
                           <span>{order.shipment.tracking_number}</span>
                           <button
                             onClick={(e) => handleCopy(order.shipment.tracking_number, `trk-${order.id}`, e)}
-                            title="Copy Tracking #"
+                            title={pt ? 'Copiar código de rastreio' : 'Copy tracking number'}
                             className="text-slate-400 hover:text-slate-700"
                           >
                             {copiedId === `trk-${order.id}` ? (
@@ -647,11 +660,11 @@ export const OrderTable: React.FC<OrderTableProps> = ({
                         <div className="text-[10px] text-slate-400">
                           {order.shipment.actual_delivery_date ? (
                             <span className="text-emerald-600 font-medium">
-                              Delivered {order.shipment.actual_delivery_date.split(' ')[0]}
+                              {pt ? 'Entregue em' : 'Delivered'} {order.shipment.actual_delivery_date.split(' ')[0]}
                             </span>
                           ) : (
                             <span>
-                              Est: <strong className="text-slate-600 font-medium">{order.shipment.estimated_delivery}</strong>
+                              {pt ? 'Previsão' : 'Est'}: <strong className="text-slate-600 font-medium">{order.shipment.estimated_delivery}</strong>
                             </span>
                           )}
                         </div>
@@ -664,11 +677,11 @@ export const OrderTable: React.FC<OrderTableProps> = ({
                         <button
                           id={`btn-view-${order.id}`}
                           onClick={() => onSelectOrder(order)}
-                          title="View order details and shipment timeline"
+                          title={pt ? 'Ver detalhes e acompanhamento do pedido' : 'View order details and shipment timeline'}
                           className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-medium transition-colors"
                         >
                           <Eye className="w-3 h-3" />
-                          <span>View</span>
+                          <span>{pt ? 'Ver detalhes' : 'View'}</span>
                         </button>
                       </div>
                     </td>
@@ -679,14 +692,14 @@ export const OrderTable: React.FC<OrderTableProps> = ({
           </table>
         </div>
       )}
-      <div className="px-5 py-3 border-t border-slate-100 bg-slate-50 flex flex-wrap items-center justify-between gap-3 text-xs">
+      <div ref={paginationRef} className="px-5 py-3 border-t border-slate-100 bg-slate-50 flex flex-wrap items-center justify-between gap-3 text-xs">
         <span className="text-slate-500">
           {pt?'Exibindo':'Showing'} <strong className="text-slate-800">{orders.length === 0 ? 0 : (currentPage - 1) * pageSize + 1}</strong>–<strong className="text-slate-800">{Math.min(currentPage * pageSize, orders.length)}</strong> {pt?'de':'of'} <strong className="text-slate-800">{orders.length}</strong> {pt?'pedidos':'orders'}
         </span>
         <div className="flex flex-wrap items-center justify-end gap-2">
           <button
             type="button"
-            onClick={() => setCurrentPage(1)}
+            onClick={() => goToPage(1)}
             disabled={currentPage === 1}
             className="px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 font-semibold hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
             title="Ir para a primeira página"
@@ -695,7 +708,7 @@ export const OrderTable: React.FC<OrderTableProps> = ({
           </button>
           <button
             type="button"
-            onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+            onClick={() => goToPage(currentPage - 1)}
             disabled={currentPage === 1}
             className="px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 font-semibold hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
           >
@@ -711,7 +724,7 @@ export const OrderTable: React.FC<OrderTableProps> = ({
               onChange={(event) => {
                 const page = Number(event.target.value);
                 if (Number.isInteger(page) && page >= 1 && page <= totalPages) {
-                  setCurrentPage(page);
+                  goToPage(page);
                 }
               }}
               className="w-14 px-2 py-1.5 text-center rounded-lg border border-slate-200 bg-white text-slate-800 font-bold focus:outline-none focus:border-blue-500"
@@ -721,7 +734,7 @@ export const OrderTable: React.FC<OrderTableProps> = ({
           </label>
           <button
             type="button"
-            onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+            onClick={() => goToPage(currentPage + 1)}
             disabled={currentPage === totalPages}
             className="px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 font-semibold hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
           >
@@ -729,7 +742,7 @@ export const OrderTable: React.FC<OrderTableProps> = ({
           </button>
           <button
             type="button"
-            onClick={() => setCurrentPage(totalPages)}
+            onClick={() => goToPage(totalPages)}
             disabled={currentPage === totalPages}
             className="px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 font-semibold hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
             title="Ir para a última página"
