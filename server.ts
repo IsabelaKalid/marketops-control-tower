@@ -378,7 +378,7 @@ const databricksLineKey = (order: Order) => [
 
 const mergeDatabricksItem = (source: Order, existing?: Order): Order => {
   if (!existing) return source;
-  const hasLocalCancellation = Boolean(existing.cancellation_reason);
+  const sourceIsCancelled = source.status === 'Cancelled' || source.shipment.shipment_status === 'Cancelled';
   return {
     ...existing,
     ...source,
@@ -386,15 +386,18 @@ const mergeDatabricksItem = (source: Order, existing?: Order): Order => {
     notes: existing.notes,
     marketplace_purchase_confirmed: existing.marketplace_purchase_confirmed,
     marketplace_purchase_confirmed_at: existing.marketplace_purchase_confirmed_at,
-    cancellation_reason: hasLocalCancellation ? existing.cancellation_reason : source.cancellation_reason,
-    cancellation_updated_at: hasLocalCancellation ? existing.cancellation_updated_at : source.cancellation_updated_at,
-    status: hasLocalCancellation ? 'Cancelled' : source.status,
-    status_text: hasLocalCancellation ? existing.status_text : source.status_text,
+    // Databricks is authoritative for operational status. A source row that is
+    // active clears a stale local cancellation; an explicit cancellation stays.
+    cancellation_reason: sourceIsCancelled ? (source.cancellation_reason || existing.cancellation_reason) : undefined,
+    cancellation_updated_at: sourceIsCancelled ? (source.cancellation_updated_at || existing.cancellation_updated_at) : undefined,
+    status: sourceIsCancelled ? 'Cancelled' : source.status,
+    status_text: sourceIsCancelled ? (source.status_text || existing.status_text) : source.status_text,
+    updated_at: existing.updated_at,
     shipment: {
       ...existing.shipment,
       ...source.shipment,
-      shipment_status: hasLocalCancellation ? 'Cancelled' : source.shipment.shipment_status,
-      actual_delivery_date: hasLocalCancellation ? null : source.shipment.actual_delivery_date,
+      shipment_status: sourceIsCancelled ? 'Cancelled' : source.shipment.shipment_status,
+      actual_delivery_date: sourceIsCancelled ? null : source.shipment.actual_delivery_date,
       events: source.shipment.events.length ? source.shipment.events : existing.shipment.events,
     },
   };
@@ -419,6 +422,23 @@ const refreshDatabricksIfDue = async (force = false) => {
       const currentByKey = new Map(orders.map(item => [databricksLineKey(item), item] as const));
       const mergedSourceItems = sourceItems.map(item => mergeDatabricksItem(item, currentByKey.get(databricksLineKey(item))));
       const synchronizedGroupKeys = new Set<string>(mergedSourceItems.map(item => orderGroupKey(item)));
+      const lifecycleChangedGroups = new Set<string>();
+      const synchronizationTime = new Date().toISOString();
+      for (const groupedSource of groupOrders(mergedSourceItems)) {
+        const groupKey = orderGroupKey(groupedSource);
+        const before = previousLifecycleByGroup.get(groupKey);
+        if (!before) continue;
+        const after = lifecycleSnapshot(groupedSource);
+        const lifecycleChanged = (['purchase', 'etd', 'eta', 'entryCd', 'billing', 'delivery', 'cancelled'] as const)
+          .some(key => before[key] !== after[key]);
+        if (!lifecycleChanged) continue;
+        lifecycleChangedGroups.add(groupKey);
+        for (const item of mergedSourceItems) {
+          if (orderGroupKey(item) !== groupKey) continue;
+          item.updated_at = synchronizationTime;
+          item.shipment.databricks_sync_time = synchronizationTime;
+        }
+      }
 
       if (activeDataSource === 'postgres') {
         await insertOrdersToPostgres(mergedSourceItems);
@@ -428,6 +448,7 @@ const refreshDatabricksIfDue = async (force = false) => {
         const localOnly = orders.filter(item => !sourceKeys.has(databricksLineKey(item)));
         orders = applyDemoContactDefaults(deduplicateOrderLines([...mergedSourceItems, ...localOnly]));
       }
+      if (lifecycleChangedGroups.size) saveCancellationReasons();
 
       const updatedGroups = new Map(groupOrders(orders).map(order => [orderGroupKey(order), order] as const));
       for (const groupKey of synchronizedGroupKeys) {
@@ -696,12 +717,14 @@ const lifecycleAlerts = (before: LifecycleSnapshot, after: LifecycleSnapshot, or
 };
 
 const lifecycleDateAlerts = (before: LifecycleSnapshot, after: LifecycleSnapshot, order: Order) =>
-  lifecycleAlerts(before, after, order).filter(event =>
+  (order.status === 'Cancelled' || order.shipment.shipment_status === 'Cancelled'
+    ? []
+    : lifecycleAlerts(before, after, order).filter(event =>
     event.type === 'Shipment Dispatched' ||
     event.type === 'In Transit' ||
     event.type === 'Out for Delivery' ||
     event.type === 'Delivered'
-  );
+  ));
 
 const savePurchaseConfirmations = () => {
   const payload: Record<string, PurchaseConfirmation> = {};
@@ -906,20 +929,26 @@ const buildDeliveryAlertHtml = (order: Order, title: string, message: string, ev
   const carrier = order.shipment.carrier || 'A definir';
   const eta = order.shipment.estimated_delivery || 'Em atualização';
   const steps = [
-    { label: 'Pedido registrado', date: order.date_order },
-    { label: 'Preparando envio', date: order.marketplace_purchase_confirmed_at },
-    { label: 'Pedido enviado', date: order.etd },
-    { label: 'Chegou em Manaus', date: order.eta },
-    { label: 'Chegou ao CD', date: order.entry_cd_date },
-    { label: 'Saiu para entrega', date: order.billing_date },
-    { label: 'Entregue', date: order.delivery_client_date },
+    { label: 'Pedido registrado', date: order.date_order, icon: '🛒' },
+    { label: 'Compra confirmada', date: order.marketplace_purchase_confirmed_at, icon: '📦' },
+    { label: 'Previsão de embarque (ETD)', date: order.etd, icon: '✈️' },
+    { label: 'Previsão de chegada (ETA)', date: order.eta, icon: '🛬' },
+    { label: 'Previsão de entrada no CD', date: order.entry_cd_date, icon: '🏬' },
+    { label: 'Previsão de faturamento', date: order.billing_date, icon: '🚚' },
+    { label: 'Previsão de entrega ao cliente', date: order.delivery_client_date, icon: '✅' },
   ];
   const activeStep = stage.index;
+  const formatEmailDate = (value?: string) => value
+    ? escapeHtml(value.slice(0, 10).split('-').reverse().join('/'))
+    : 'Aguardando atualização';
   const progress = eventType === 'Cancelled'
     ? `<div style="margin:20px 0;padding:16px;border-radius:12px;background:#fff1f2;border:1px solid #fecdd3;color:#9f1239"><strong>Pedido cancelado</strong><div style="margin-top:6px;font-size:12px">Motivo: ${escapeHtml(order.cancellation_reason || 'Motivo ainda não informado')}</div></div>`
     : `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:20px 0;table-layout:fixed"><tr>${steps.map((step, index) => {
-        const complete = index <= activeStep;
-        return `<td align="center" valign="top" style="position:relative"><div style="height:4px;background:${complete ? '#2563eb' : '#dbe4ef'};margin:10px 0 -12px"></div><div style="position:relative;margin:auto;width:20px;height:20px;line-height:20px;border-radius:50%;background:${complete ? '#2563eb' : '#dbe4ef'};color:white;font-size:10px;font-weight:700">${complete ? '✓' : index + 1}</div><div style="margin-top:8px;font-size:9px;line-height:1.25;color:${complete ? '#1e3a8a' : '#64748b'};font-weight:${index === activeStep ? '700' : '400'}">${step.label}</div><div style="margin-top:3px;font-size:8px;color:#64748b">${step.date ? escapeHtml(step.date.slice(0, 10).split('-').reverse().join('/')) : '—'}</div></td>`;
+        const complete = index < activeStep;
+        const current = index === activeStep;
+        const color = complete ? '#16a34a' : current ? '#2563eb' : '#cbd5e1';
+        const labelColor = complete ? '#166534' : current ? '#1d4ed8' : '#64748b';
+        return `<td align="center" valign="top" style="position:relative;padding:0 2px"><div style="height:4px;background:${index <= activeStep ? color : '#e2e8f0'};margin:13px 0 -16px"></div><div style="position:relative;margin:auto;width:28px;height:28px;line-height:28px;border-radius:50%;background:${color};border:2px solid #ffffff;box-shadow:0 0 0 1px ${color};font-size:14px">${step.icon}</div><div style="margin-top:9px;font-size:9px;line-height:1.25;color:${labelColor};font-weight:${current ? '700' : '500'}">${step.label}</div><div style="margin-top:4px;font-size:8px;color:#64748b;line-height:1.25">${formatEmailDate(step.date)}</div></td>`;
       }).join('')}</tr></table>`;
   return `<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:Arial,sans-serif;color:#172033">
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5f9;padding:28px 12px"><tr><td align="center">
@@ -1022,7 +1051,7 @@ async function dispatchDeliveryAlert(
         to: recipient,
         subject: alert.subject,
         text: alert.message,
-        html: buildDeliveryAlertHtml(order, eventTypeLabelPt(eventType), alert.message, eventType),
+        html: buildDeliveryAlertHtml(order, alert.subject.replace(/^\[MarketOps\]\s*/, ''), alert.message, eventType),
       });
       messageId = info.messageId;
       provider = 'Resend';
@@ -1033,7 +1062,7 @@ async function dispatchDeliveryAlert(
         to: recipient,
         subject: alert.subject,
         text: alert.message,
-        html: buildDeliveryAlertHtml(order, eventTypeLabelPt(eventType), alert.message, eventType),
+        html: buildDeliveryAlertHtml(order, alert.subject.replace(/^\[MarketOps\]\s*/, ''), alert.message, eventType),
       });
       messageId = info.messageId;
       provider = 'SMTP';

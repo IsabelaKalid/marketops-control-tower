@@ -375,8 +375,8 @@ export async function insertOrdersToPostgres(items: Order[]) {
         `insert into public.orders (
            purchase_order, customer_order_id, customer_name, customer_email, customer_phone, customer_cpf, purchase_date,
            seller, seller_country, status, status_text, delivery_limit_days,
-           purchase_confirmed, purchase_confirmed_at, cancellation_reason, cancelled_at
-         ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+           purchase_confirmed, purchase_confirmed_at, cancellation_reason, cancelled_at, updated_at
+         ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
          on conflict (purchase_order) do update set
            customer_order_id = excluded.customer_order_id,
            customer_name = excluded.customer_name,
@@ -387,7 +387,9 @@ export async function insertOrdersToPostgres(items: Order[]) {
            seller_country = excluded.seller_country,
            status = excluded.status,
            status_text = excluded.status_text,
-           updated_at = now()
+           cancellation_reason = excluded.cancellation_reason,
+           cancelled_at = excluded.cancelled_at,
+           updated_at = excluded.updated_at
          returning id`,
         [
           purchaseOrder,
@@ -406,6 +408,7 @@ export async function insertOrdersToPostgres(items: Order[]) {
           item.marketplace_purchase_confirmed_at || null,
           item.cancellation_reason || null,
           item.cancellation_updated_at || null,
+          item.updated_at || new Date().toISOString(),
         ],
       );
       const orderDatabaseId = orderResult.rows[0].id;

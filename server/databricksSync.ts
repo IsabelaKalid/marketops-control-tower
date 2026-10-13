@@ -134,8 +134,11 @@ const numberValue = (value: unknown): number => {
 const boolValue = (value: unknown): boolean => ['true', '1', 'sim', 'yes', 'y'].includes(asString(value).toLowerCase());
 
 const normalizeOrderStatus = (row: Record<string, unknown>): OrderStatus => {
-  const raw = asString(row.status).toLowerCase();
-  if (raw.includes('cancel')) return 'Cancelled';
+  const statusValues = [row.status, row.status_compra, row.sts_compra, row.order_status, row.operational_status, row.delivery_status]
+    .map(value => asString(value).toLowerCase())
+    .filter(Boolean);
+  const raw = statusValues[0] || '';
+  if (statusValues.some(value => value.includes('cancel'))) return 'Cancelled';
   if (optional(row.delivery_client_date) || raw === 'delivered') return 'Delivered';
   if (optional(row.invoice) || optional(row.wr_date) || optional(row.etd) || optional(row.eta) || optional(row.di_date) || optional(row.entry_cd_date) || optional(row.billing_date)) return 'Shipped';
   if (raw === 'processing') return 'Processing';

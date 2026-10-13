@@ -17,7 +17,9 @@ import {
   BellRing,
   ExternalLink,
   ShieldCheck,
-  ShoppingCart
+  ShoppingCart,
+  Plane,
+  Warehouse,
 } from 'lucide-react';
 import { Order, OrderStatus } from '../types';
 import { translatePurchaseStatus } from '../utils/statusTranslation';
@@ -119,14 +121,23 @@ export const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
       : parsed.toLocaleDateString('pt-BR');
   };
   const trackingMilestones = [
-    { label: pt ? 'Pedido registrado' : 'Order registered', date: latestDate(item => item.date_order), detail: pt ? 'Data em que o pedido entrou no MarketOps.' : 'Date the order entered MarketOps.' },
-    { label: pt ? 'Preparando envio' : 'Preparing shipment', date: latestDate(item => item.marketplace_purchase_confirmed_at), detail: pt ? 'Compra confirmada no sistema.' : 'Purchase confirmed in the system.' },
-    { label: pt ? 'Pedido enviado (ETD)' : 'Order sent (ETD)', date: latestDate(item => item.etd), detail: pt ? 'Saída da warehouse com destino a Manaus.' : 'Departure from the warehouse toward Manaus.' },
-    { label: pt ? 'Chegou em Manaus (ETA)' : 'Arrived in Manaus (ETA)', date: latestDate(item => item.eta), detail: pt ? 'Chegada registrada em Manaus.' : 'Arrival registered in Manaus.' },
-    { label: pt ? 'Chegou ao centro de distribuição' : 'Arrived at distribution center', date: latestDate(item => item.entry_cd_date), detail: pt ? 'Recebido no centro de distribuição da empresa.' : 'Received at the company distribution center.' },
-    { label: pt ? 'Saiu para entrega' : 'Out for delivery', date: latestDate(item => item.billing_date), detail: pt ? 'Pedido faturado e liberado para entrega.' : 'Order invoiced and released for delivery.' },
-    { label: pt ? 'Entregue' : 'Delivered', date: latestDate(item => item.delivery_client_date), detail: pt ? 'Entrega final ao cliente.' : 'Final delivery to the customer.' },
-  ].filter((milestone): milestone is { label: string; date: string; detail: string } => Boolean(milestone.date));
+    { label: pt ? 'Pedido registrado' : 'Order registered', date: latestDate(item => item.date_order) || '', detail: pt ? 'Pedido recebido pelo MarketOps.' : 'Order received by MarketOps.', icon: ShoppingCart, tone: 'sky' },
+    { label: pt ? 'Compra confirmada' : 'Purchase confirmed', date: latestDate(item => item.marketplace_purchase_confirmed_at) || '', detail: pt ? 'Compra confirmada e envio em preparação.' : 'Purchase confirmed and shipment being prepared.', icon: Package, tone: 'amber' },
+    { label: pt ? 'Previsão de embarque (ETD)' : 'Estimated departure (ETD)', date: latestDate(item => item.etd) || '', detail: pt ? 'Previsão de saída da warehouse para Manaus.' : 'Estimated departure from the warehouse toward Manaus.', icon: Plane, tone: 'indigo' },
+    { label: pt ? 'Previsão de chegada em Manaus (ETA)' : 'Estimated arrival in Manaus (ETA)', date: latestDate(item => item.eta) || '', detail: pt ? 'Previsão de chegada em Manaus.' : 'Estimated arrival in Manaus.', icon: MapPin, tone: 'violet' },
+    { label: pt ? 'Previsão de entrada no centro de distribuição' : 'Estimated distribution center arrival', date: latestDate(item => item.entry_cd_date) || '', detail: pt ? 'Previsão de recebimento no centro de distribuição.' : 'Estimated receipt at the distribution center.', icon: Warehouse, tone: 'blue' },
+    { label: pt ? 'Previsão de faturamento e entrega' : 'Estimated billing and delivery', date: latestDate(item => item.billing_date) || '', detail: pt ? 'Previsão de faturamento e liberação para entrega.' : 'Estimated billing and release for delivery.', icon: Truck, tone: 'orange' },
+    { label: pt ? 'Previsão de entrega ao cliente' : 'Estimated customer delivery', date: latestDate(item => item.delivery_client_date) || '', detail: pt ? 'Data prevista de entrega ao cliente.' : 'Estimated delivery date to the customer.', icon: CheckCircle2, tone: 'emerald' },
+  ].filter(milestone => Boolean(milestone.date));
+  const trackingToneClasses: Record<string, string> = {
+    sky: 'ring-sky-200 bg-sky-100 text-sky-700',
+    amber: 'ring-amber-200 bg-amber-100 text-amber-700',
+    indigo: 'ring-indigo-200 bg-indigo-100 text-indigo-700',
+    violet: 'ring-violet-200 bg-violet-100 text-violet-700',
+    blue: 'ring-blue-200 bg-blue-100 text-blue-700',
+    orange: 'ring-orange-200 bg-orange-100 text-orange-700',
+    emerald: 'ring-emerald-200 bg-emerald-100 text-emerald-700',
+  };
   const forecastStageLabels: Record<string, string> = {
     warehouse_received: pt ? 'Chegada na warehouse' : 'Warehouse arrival',
     dispatched: pt ? 'Pedido enviado (ETD)' : 'Order sent (ETD)',
@@ -641,7 +652,7 @@ export const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
                     {pt ? 'Telemetria logística do pedido' : 'Order Logistics Telemetry'}
                   </h3>
                   <p className="text-[11px] text-zinc-600">
-                    {pt ? 'Estrutura preparada para receber dados de uma fonte corporativa futura, como Databricks.' : 'Structure prepared to receive data from a future corporate source such as Databricks.'}
+                    {pt ? 'Datas e atualizações sincronizadas com o Databricks.' : 'Dates and updates synchronized with Databricks.'}
                   </p>
                 </div>
               </div>
@@ -716,10 +727,12 @@ export const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
                 <Clock className="w-3.5 h-3.5 text-zinc-600" />
                 {pt ? 'Acompanhamento do pedido' : 'Order Tracking'} ({trackingMilestones.length})
               </h4>
-              <div className="space-y-2 relative pl-4 border-l-2 border-amber-300">
-                {trackingMilestones.length ? trackingMilestones.map((milestone) => (
+              <div className="space-y-3 relative pl-5 border-l-2 border-slate-200">
+                {trackingMilestones.length ? trackingMilestones.map(({ icon: MilestoneIcon, ...milestone }) => (
                   <div key={milestone.label} className="relative pb-2">
-                    <span className="absolute -left-[21px] top-1 w-2.5 h-2.5 rounded-full bg-amber-600 border-2 border-white ring-1 ring-amber-300" />
+                    <span className={`absolute -left-[29px] top-0.5 flex h-6 w-6 items-center justify-center rounded-full border-2 border-white shadow-sm ring-1 ${trackingToneClasses[milestone.tone]}`}>
+                      <MilestoneIcon className="h-3.5 w-3.5" />
+                    </span>
                     <div className="flex items-center justify-between text-[11px]">
                       <span className="font-semibold text-zinc-900">{milestone.label}</span>
                       <span className="font-mono text-zinc-500 text-[10px]">{formatTrackingDate(milestone.date)}</span>
