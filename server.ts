@@ -42,6 +42,13 @@ const requireReportAccess = requireRoles(
   'analyst'
 );
 
+const matchesSharedSecret = (provided?: string, configured?: string) => {
+  const candidate = provided?.trim() || '';
+  const expected = configured?.trim() || '';
+  return Boolean(candidate && expected && candidate.length === expected.length
+    && crypto.timingSafeEqual(Buffer.from(candidate), Buffer.from(expected)));
+};
+
 app.use('/api', (request, response, next) => {
   const readOnlyMethods = ['GET', 'HEAD', 'OPTIONS'];
   const remoteAddress = request.socket.remoteAddress || '';
@@ -71,11 +78,10 @@ app.use('/api', (request, response, next) => {
   }
 
   if (request.path === '/databricks/reconcile') {
-    const configuredSecret = process.env.DATABRICKS_WEBHOOK_SECRET?.trim();
-    const suppliedSecret = request.header('x-marketops-integration-key')?.trim();
-    if (configuredSecret && suppliedSecret
-      && configuredSecret.length === suppliedSecret.length
-      && crypto.timingSafeEqual(Buffer.from(suppliedSecret), Buffer.from(configuredSecret))) {
+    const integrationKey = request.header('x-marketops-integration-key') || '';
+    const bearerToken = request.header('authorization')?.replace(/^Bearer\s+/i, '') || '';
+    if (matchesSharedSecret(integrationKey, process.env.DATABRICKS_WEBHOOK_SECRET)
+      || matchesSharedSecret(bearerToken, process.env.DATABRICKS_RECONCILE_TOKEN)) {
       next();
       return;
     }
