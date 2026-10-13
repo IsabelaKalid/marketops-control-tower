@@ -435,7 +435,7 @@ const refreshDatabricksIfDue = async (force = false) => {
         const after = updatedGroups.get(groupKey);
         if (!before || !after) continue;
 
-        for (const event of lifecycleAlerts(before, lifecycleSnapshot(after), after)) {
+        for (const event of lifecycleDateAlerts(before, lifecycleSnapshot(after), after)) {
           const alert = await dispatchDeliveryAlert(after, event.type, event.subject, event.message);
           console.log(`Databricks lifecycle notification ${alert.status} for PO ${after.purchase_order || after.id}: ${event.type}.`);
         }
@@ -694,6 +694,14 @@ const lifecycleAlerts = (before: LifecycleSnapshot, after: LifecycleSnapshot, or
   if (changed('cancelled')) events.push({ type: 'Cancelled', subject: `[MarketOps] Pedido cancelado · ${po}`, message: `O pedido ${po} foi cancelado. Motivo: ${order.cancellation_reason || 'não informado'}.` });
   return events;
 };
+
+const lifecycleDateAlerts = (before: LifecycleSnapshot, after: LifecycleSnapshot, order: Order) =>
+  lifecycleAlerts(before, after, order).filter(event =>
+    event.type === 'Shipment Dispatched' ||
+    event.type === 'In Transit' ||
+    event.type === 'Out for Delivery' ||
+    event.type === 'Delivered'
+  );
 
 const savePurchaseConfirmations = () => {
   const payload: Record<string, PurchaseConfirmation> = {};
@@ -1248,7 +1256,6 @@ app.post('/api/databricks/reconcile', async (req, res) => {
 
   const updatedGroups = new Set<string>();
   const previousLifecycle = new Map<string, LifecycleSnapshot>();
-  const previousShipmentStatus = new Map<string, ShipmentData['shipment_status']>();
   const notFound: unknown[] = [];
 
   for (const record of records) {
@@ -1272,7 +1279,6 @@ app.post('/api/databricks/reconcile', async (req, res) => {
         const currentGroup = groupOrders(orders.filter(candidate => orderGroupKey(candidate) === key))[0];
         const snapshotOrder = currentGroup || order;
         previousLifecycle.set(key, lifecycleSnapshot(snapshotOrder));
-        previousShipmentStatus.set(key, snapshotOrder.shipment.shipment_status);
       }
       reconcileLifecycle(order, record);
       updatedGroups.add(key);
@@ -1295,17 +1301,10 @@ app.post('/api/databricks/reconcile', async (req, res) => {
   for (const groupedOrder of grouped) {
     const key = orderGroupKey(groupedOrder);
     const before = previousLifecycle.get(key);
-    let lifecycleAlertSent = false;
     if (before) {
-      for (const event of lifecycleAlerts(before, lifecycleSnapshot(groupedOrder), groupedOrder)) {
+      for (const event of lifecycleDateAlerts(before, lifecycleSnapshot(groupedOrder), groupedOrder)) {
         triggeredAlerts.push(await dispatchDeliveryAlert(groupedOrder, event.type, event.subject, event.message));
-        lifecycleAlertSent = true;
       }
-    }
-    const previousStatus = previousShipmentStatus.get(key);
-    const currentStatus = groupedOrder.shipment.shipment_status;
-    if (!lifecycleAlertSent && previousStatus && previousStatus !== currentStatus) {
-      triggeredAlerts.push(await dispatchDeliveryAlert(groupedOrder, eventTypeForShipmentStatus(currentStatus)));
     }
   }
 
