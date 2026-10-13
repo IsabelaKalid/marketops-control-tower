@@ -395,6 +395,16 @@ const databricksLineKey = (order: Order) => [
   normalizeKeyPart(order.sku),
 ].join(':::');
 
+const latestUpdatedAt = (sourceUpdatedAt?: string, existingUpdatedAt?: string) => {
+  const sourceTime = sourceUpdatedAt ? Date.parse(sourceUpdatedAt) : Number.NaN;
+  const existingTime = existingUpdatedAt ? Date.parse(existingUpdatedAt) : Number.NaN;
+  if (sourceUpdatedAt && Number.isFinite(sourceTime)
+    && (!Number.isFinite(existingTime) || sourceTime > existingTime)) {
+    return sourceUpdatedAt;
+  }
+  return existingUpdatedAt || sourceUpdatedAt || new Date().toISOString();
+};
+
 const mergeDatabricksItem = (source: Order, existing?: Order): Order => {
   if (!existing) return source;
   const sourceIsCancelled = source.status === 'Cancelled' || source.shipment.shipment_status === 'Cancelled';
@@ -411,7 +421,9 @@ const mergeDatabricksItem = (source: Order, existing?: Order): Order => {
     cancellation_updated_at: sourceIsCancelled ? (source.cancellation_updated_at || existing.cancellation_updated_at) : undefined,
     status: sourceIsCancelled ? 'Cancelled' : source.status,
     status_text: sourceIsCancelled ? (source.status_text || existing.status_text) : source.status_text,
-    updated_at: existing.updated_at,
+    // Keep the newest source timestamp so Databricks edits can participate in
+    // the "Updated recently" ordering after the regular sync.
+    updated_at: latestUpdatedAt(source.updated_at, existing.updated_at),
     shipment: {
       ...existing.shipment,
       ...source.shipment,
