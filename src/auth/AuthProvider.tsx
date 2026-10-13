@@ -12,8 +12,6 @@ import { supabase, supabaseConfigured } from '../lib/supabase';
 
 export type UserRole =
   | 'admin'
-  | 'operations'
-  | 'analyst'
   | 'viewer'
   | 'guest';
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected';
@@ -76,7 +74,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
       return;
     }
 
-    setRole((data?.role as UserRole) || 'viewer');
+    // Legacy roles (operations/analyst) are read-only viewers.
+    setRole(data?.role === 'admin' ? 'admin' : 'viewer');
     setApprovalStatus((data?.approval_status as ApprovalStatus) || 'pending');
   };
 
@@ -234,10 +233,10 @@ export function AuthProvider({ children }: AuthProviderProps) {
       approvalStatus,
       isGuest,
       canManageOrders:
-        !isGuest && approvalStatus === 'approved' && (role === 'admin' || role === 'operations'),
+        !isGuest && approvalStatus === 'approved' && role === 'admin',
       canViewReports:
         !isGuest && approvalStatus === 'approved' &&
-        ['admin', 'operations', 'analyst', 'viewer'].includes(role),
+        (role === 'admin' || role === 'viewer'),
       signOut,
       refreshProfile,
     }),

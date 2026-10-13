@@ -639,15 +639,10 @@ export default function App() {
             setSelectedOrder(activeTrackingOrder);
           }
         }}
-        onOpenNewOrder={() => setIsNewOrderModalOpen(true)}
-        onOpenBatchImport={() => setIsBatchImportModalOpen(true)}
         onOpenDatabricksModal={() => setIsDatabricksModalOpen(true)}
-        unreadAlertsCount={alerts.length}
-        onOpenAlerts={() => setIsAlertsDrawerOpen(true)}
         mobileOpen={isMobileMenuOpen}
         isMobileOpen={isMobileMenuOpen}
         onCloseMobile={() => setIsMobileMenuOpen(false)}
-        activeStatusFilter={filters.status}
         onSelectStatusFilter={(status) => setFilters((prev) => ({ ...prev, status }))}
         language={language}
       />
@@ -661,7 +656,6 @@ export default function App() {
           onOpenNewOrder={() => setIsNewOrderModalOpen(true)}
           onOpenBatchImport={() => setIsBatchImportModalOpen(true)}
           onOpenAlerts={() => setIsAlertsDrawerOpen(true)}
-          onOpenDatabricksModal={() => setIsDatabricksModalOpen(true)}
           onSyncAll={handleSyncAll}
           isSyncing={isSyncingAll}
           unreadAlertsCount={alerts.length}
@@ -675,26 +669,22 @@ export default function App() {
         {/* Scrollable Dashboard Body */}
         <main className="p-4 sm:p-6 lg:p-8 flex-1 flex flex-col gap-6 overflow-y-auto">
           {isGuest && (
-  <div className="flex flex-col gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-amber-950 sm:flex-row sm:items-center sm:justify-between">
-    <div>
-      <p className="text-sm font-bold">
-        Read-only demonstration
-      </p>
-      <p className="text-xs text-amber-800">
-        You can explore the fictional data, but operational changes are disabled.
-      </p>
-    </div>
+            <div className="flex flex-col gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-900 sm:flex-row sm:items-center sm:justify-between">
+              <p>
+                {language === 'pt'
+                  ? 'Demonstração somente leitura: os dados são fictícios e alterações estão desativadas.'
+                  : 'Read-only demonstration: data is fictional and changes are disabled.'}
+              </p>
+              <button
+                type="button"
+                onClick={() => void signOut()}
+                className="text-xs font-semibold text-amber-900 underline-offset-2 hover:underline"
+              >
+                {language === 'pt' ? 'Sair da demonstração' : 'Exit demo'}
+              </button>
+            </div>
+          )}
 
-    <button
-      type="button"
-      onClick={() => void signOut()}
-      className="rounded-lg border border-amber-400 bg-white px-3 py-2 text-xs font-bold text-amber-900 hover:bg-amber-100"
-    >
-      Exit demo
-    </button>
-  </div>
-)}
-          
           {activeTab === 'dashboard' ? (
             <ReportsDashboard orders={orders} stats={filteredStats} />
           ) : activeTab === 'invoices' ? (
@@ -708,7 +698,6 @@ export default function App() {
             stats={filteredStats}
             activeStatusFilter={filters.status}
             onSelectStatus={(st) => setFilters((prev) => ({ ...prev, status: st }))}
-            onOpenDatabricksModal={() => setIsDatabricksModalOpen(true)}
             language={language}
           />
 

@@ -1,6 +1,6 @@
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 
-export type UserRole = 'admin' | 'operations' | 'analyst' | 'viewer';
+export type UserRole = 'admin' | 'viewer';
 
 export interface AuthenticatedRequest extends Request {
   authUser?: {
@@ -10,7 +10,12 @@ export interface AuthenticatedRequest extends Request {
   };
 }
 
-const validRoles: UserRole[] = ['admin', 'operations', 'analyst', 'viewer'];
+// Legacy profiles (operations/analyst) are treated as read-only viewers.
+const knownRoles = ['admin', 'operations', 'analyst', 'viewer'];
+const toAccessRole = (value?: string): UserRole | undefined => {
+  if (!value || !knownRoles.includes(value)) return undefined;
+  return value === 'admin' ? 'admin' : 'viewer';
+};
 
 function getBearerToken(request: Request) {
   const authorization = request.headers.authorization;
@@ -28,7 +33,7 @@ export function requireRoles(...allowedRoles: UserRole[]): RequestHandler {
       const token = getBearerToken(request);
       if (!token) {
         response.status(401).json({
-          error: 'Você está usando o acesso de visitante, que permite apenas visualizar os dados. Entre com uma conta de Administrador ou Operações para realizar esta ação.',
+          error: 'Você está usando o acesso de visitante, que permite apenas visualizar os dados. Entre com uma conta de Administrador para realizar esta ação.',
           code: 'GUEST_READ_ONLY',
         });
         return;
@@ -84,8 +89,8 @@ export function requireRoles(...allowedRoles: UserRole[]): RequestHandler {
       }
 
       const profiles = await profileResponse.json() as Array<{ role?: string; approval_status?: string }>;
-      const role = profiles[0]?.role as UserRole | undefined;
-      if (!role || !validRoles.includes(role)) {
+      const role = toAccessRole(profiles[0]?.role);
+      if (!role) {
         response.status(403).json({
           error: 'Seu perfil não possui uma função de acesso válida. Solicite ao administrador a correção da sua permissão.',
           code: 'INVALID_ROLE',
@@ -104,12 +109,9 @@ export function requireRoles(...allowedRoles: UserRole[]): RequestHandler {
       }
 
       if (!allowedRoles.includes(role)) {
-        const isViewer = role === 'viewer';
         response.status(403).json({
-          error: isViewer
-            ? 'Seu perfil é Visitante e possui acesso somente para visualização. Entre com uma conta de Administrador ou Operações para realizar esta ação.'
-            : 'Seu perfil atual não possui permissão para realizar esta ação. Solicite acesso ao administrador do MarketOps.',
-          code: isViewer ? 'GUEST_READ_ONLY' : 'INSUFFICIENT_ROLE',
+          error: 'Seu perfil é de Visualização e permite apenas consultar pedidos. Somente o Administrador pode realizar esta ação.',
+          code: 'GUEST_READ_ONLY',
         });
         return;
       }

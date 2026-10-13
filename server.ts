@@ -31,16 +31,10 @@ const PORT = Number(process.env.PORT || 3000);
 // conversion to JSON. Keep a bounded limit large enough for demo workbooks.
 app.use(express.json({ limit: '5mb' }));
 
-const requireOrderManager = requireRoles(
-  'admin',
-  'operations'
-);
+// Only administrators change data; every other approved profile is read-only.
+const requireOrderManager = requireRoles('admin');
 
-const requireReportAccess = requireRoles(
-  'admin',
-  'operations',
-  'analyst'
-);
+const requireReportAccess = requireRoles('admin');
 
 const matchesSharedSecret = (provided?: string, configured?: string) => {
   const candidate = provided?.trim() || '';

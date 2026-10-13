@@ -65,7 +65,7 @@ const MonthlyLineChart = ({ data, valueKey, title, description, formatter, strok
 
 export const ReportsDashboard: React.FC<Props> = ({ orders, stats }) => {
   const { role, isGuest } = useAuth();
-  const canSendReports = !isGuest && ['admin', 'operations', 'analyst'].includes(role);
+  const canSendReports = !isGuest && role === 'admin';
   const [reportLanguage, setReportLanguage] = useState<'pt' | 'en'>(() => localStorage.getItem('marketops-report-language') === 'en' ? 'en' : 'pt');
   const pt = reportLanguage === 'pt';
   const [to, setTo] = useState(() => localStorage.getItem('marketops-report-to') || '');
